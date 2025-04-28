@@ -1,7 +1,8 @@
 # fluxft/train/trainer.py
 from __future__ import annotations
 
-import math, time, logging, os
+import time
+import logging
 from pathlib import Path
 from typing import Dict, Any
 
@@ -21,49 +22,41 @@ from ..data.loader import build_dataloaders
 from ..lora.patcher import add_lora_to_unet
 from ..utils import set_logging, seed_everything
 
+# set up a file logger for shape debugging
+shape_debug_logger = logging.getLogger("shape_debug")
+shape_debug_logger.setLevel(logging.WARNING)
+fh = logging.FileHandler(Path(__file__).parent.parent / "logs/last_train.log", mode="w")
+fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+shape_debug_logger.addHandler(fh)
+shape_debug_logger.propagate = False
+
 log = logging.getLogger(__name__)
 
 
-# Set up dedicated SHAPE_DEBUG file logger
-import logging
-import os
-os.makedirs(os.path.join(os.path.dirname(__file__), '../../logs'), exist_ok=True)
-shape_debug_logger = logging.getLogger('shape_debug')
-for h in shape_debug_logger.handlers[:]:
-    shape_debug_logger.removeHandler(h)
-shape_debug_logger.setLevel(logging.WARNING)
-file_handler = logging.FileHandler(os.path.join(os.path.dirname(__file__), '../../logs/last_train.log'), mode='w')
-file_handler.setLevel(logging.WARNING)
-formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-file_handler.setFormatter(formatter)
-shape_debug_logger.addHandler(file_handler)
-shape_debug_logger.propagate = False
-
 class LoRATrainer:
-    """Wraps accelerator, data, and training loop."""
+    """Wraps accelerator, data, and the training loop."""
 
     def __init__(self, cfg: GlobalConfig):
         self.cfg = cfg
         set_logging(cfg.log_level)
         seed_everything(cfg.train.seed)
-        import torch.backends.cudnn
         torch.backends.cudnn.benchmark = True
-
-        # Latent projection layer: dynamically set input size to match VAE output channels
-        self.latent_proj = None
 
         self._init_accelerator()
         self._load_pipeline()
         self._prepare_data()
 
-    # ---------- internal helpers ----------
+    # internal helpers
+
     def _init_accelerator(self):
-        pcfg = None
-        if ProjectConfiguration is not None:
-            pcfg = ProjectConfiguration(
+        pcfg = (
+            ProjectConfiguration(
                 project_dir=str(self.cfg.output_dir),
                 logging_dir=str(self.cfg.output_dir / "logs"),
             )
+            if ProjectConfiguration
+            else None
+        )
         self.accel = Accelerator(
             gradient_accumulation_steps=self.cfg.train.gradient_accum_steps,
             mixed_precision=self.cfg.train.mixed_precision,
@@ -71,22 +64,28 @@ class LoRATrainer:
         )
 
     def _load_pipeline(self):
+        # choose dtype based on config
         self.dtype = (
-            torch.float16 if self.cfg.train.mixed_precision == "fp16"
-            else torch.bfloat16 if self.cfg.train.mixed_precision == "bf16"
+            torch.float16
+            if self.cfg.train.mixed_precision == "fp16"
+            else torch.bfloat16
+            if self.cfg.train.mixed_precision == "bf16"
             else torch.float32
         )
+
         log.info("Loading FLUX pipeline …")
         self.pipe = FluxPipeline.from_pretrained(
             self.cfg.train.model_id,
             revision=self.cfg.train.revision,
             torch_dtype=self.dtype,
         )
-        # Replace scheduler with DDPMScheduler for training
+
+        # swap in a training scheduler
         self.noise_scheduler = DDPMScheduler.from_config(
             self.pipe.scheduler.config, prediction_type="epsilon"
         )
-        # Apply LoRA to transformer
+
+        # inject LoRA into the model
         lora_cfg = LoraConfig(
             r=self.cfg.lora.rank,
             lora_alpha=self.cfg.lora.rank,
@@ -95,10 +94,16 @@ class LoRATrainer:
         )
         self.unet = add_lora_to_unet(self.pipe.transformer, lora_cfg)
 
-        # Freeze non-trainable modules
+        # freeze everything except LoRA and projection
         self.pipe.vae.requires_grad_(False)
         self.pipe.text_encoder.requires_grad_(False)
         self.pipe.text_encoder_2.requires_grad_(False)
+
+        # --- NEW: build a single projection layer up front ---
+        # maps VAE latent channels -> transformer input channels
+        latent_c = self.pipe.vae.config.latent_channels
+        trans_c = self.unet.config.in_channels
+        self.latent_proj = torch.nn.Linear(latent_c, trans_c)
 
     def _prepare_data(self):
         img_size = getattr(self.cfg.data, "img_size", 1200)
@@ -106,10 +111,11 @@ class LoRATrainer:
             self.cfg.data, self.cfg.train.batch_size, img_size=img_size
         )
 
-        param_groups = [p for p in self.unet.parameters() if p.requires_grad]
-        self.opt = torch.optim.AdamW(
-            param_groups, lr=self.cfg.train.learning_rate, weight_decay=1e-2
-        )
+        # optimizer over only LoRA + projection parameters
+        params = [
+            p for p in self.unet.parameters() if p.requires_grad
+        ] + list(self.latent_proj.parameters())
+        self.opt = torch.optim.AdamW(params, lr=self.cfg.train.learning_rate, weight_decay=1e-2)
 
         total_steps = (
             self.cfg.train.max_steps
@@ -123,6 +129,7 @@ class LoRATrainer:
             num_training_steps=total_steps,
         )
 
+        # prepare everything with accelerate
         components = (
             self.unet,
             self.pipe.vae,
@@ -130,7 +137,7 @@ class LoRATrainer:
             self.opt,
             self.lr_sched,
             self.train_dl,
-            *( [self.val_dl] if self.val_dl else [] ),
+            *([self.val_dl] if self.val_dl else []),
         )
         prepared = self.accel.prepare(*components)
         (
@@ -145,7 +152,8 @@ class LoRATrainer:
         if self.val_dl:
             self.val_dl = rest[0]
 
-    # ---------- public API ----------
+    # public API
+
     def train(self) -> Dict[str, Any]:
         cfg, acc = self.cfg, self.accel
         total_steps = (
@@ -153,87 +161,75 @@ class LoRATrainer:
             if cfg.train.max_steps > 0
             else len(self.train_dl) * cfg.train.epochs
         )
-        log.info(f"Start training for {total_steps} steps")
+        log.info(f"Starting training for {total_steps} steps…")
 
         step, t0 = 0, time.time()
-        img_scaler = self.pipe.vae.config.scaling_factor
+        scaling = self.pipe.vae.config.scaling_factor
 
         try:
             for batch in self.train_dl:
                 try:
                     with acc.accumulate(self.unet):
-                        imgs = batch["pixel_values"].to(
-                            acc.device, dtype=self.dtype
-                        )
+                        imgs = batch["pixel_values"].to(acc.device, dtype=self.dtype)
 
-                        # VAE encoding
+                        # encode to latents
                         latents = self.pipe.vae.encode(imgs).latent_dist.sample()
-                        latents *= img_scaler
+                        latents = latents * scaling
 
-                        # Prepare latents
+                        # flatten spatial dims
                         b, c, h, w = latents.shape
-                        lat = latents.permute(0, 2, 3, 1).reshape(b, h * w, c)
-                        # [SHAPE_DEBUG] Only this log is kept for shape debugging
-                        shape_debug_logger.warning(f"[SHAPE_DEBUG] latents.shape={latents.shape} c={c} lat.shape={lat.shape}")
-                        for handler in shape_debug_logger.handlers:
-                            handler.flush()
-                        # Create or update the projection layer if needed
-                        if self.latent_proj is None or self.latent_proj.in_features != c:
-                            device = lat.device
-                            dtype = lat.dtype
-                            self.latent_proj = torch.nn.Linear(c, 3072).to(device=device, dtype=dtype)
-                        # Ensure projection layer is on correct device and dtype
-                        self.latent_proj = self.latent_proj.to(device=lat.device, dtype=lat.dtype)
-                        lat = self.latent_proj(lat)
+                        lat_flat = latents.permute(0, 2, 3, 1).reshape(b, h*w, c)
 
-                        # Add noise
-                        noise = torch.randn_like(lat, device=lat.device)
+                        # debug shapes
+                        shape_debug_logger.warning(f"[SHAPE] lat_flat={lat_flat.shape}")
+
+                        # project into transformer channel space
+                        lat_proj = self.latent_proj(lat_flat)
+
+                        # add noise
+                        noise = torch.randn_like(lat_proj)
                         ts = torch.randint(
                             0,
                             self.noise_scheduler.config.num_train_timesteps,
                             (b,),
-                            device=lat.device,
+                            device=lat_proj.device,
                         ).long()
-                        lat_noisy = self.noise_scheduler.add_noise(lat, noise, ts)
+                        lat_noisy = self.noise_scheduler.add_noise(lat_proj, noise, ts)
 
-                        # Forward
+                        # predict
                         preds = self.unet(
                             hidden_states=lat_noisy,
                             timestep=ts,
                             encoder_hidden_states=None,
                             pooled_projections=None,
-                            img_ids=torch.arange(h * w, device=lat.device).repeat(b, 1),
+                            img_ids=torch.arange(h*w, device=lat_proj.device).repeat(b,1),
                             txt_ids=None,
                         ).sample
 
                         loss = F.mse_loss(preds.float(), noise.float())
-
-                        # Backward
                         acc.backward(loss)
                         self.opt.step()
                         self.lr_sched.step()
                         self.opt.zero_grad()
 
                 except RuntimeError as e:
-                    if 'out of memory' in str(e):
-                        log.warning('CUDA OOM on batch, skipping batch.')
+                    if "out of memory" in str(e):
+                        log.warning("CUDA OOM, skipping batch…")
                         torch.cuda.empty_cache()
                         continue
                     else:
                         raise
 
-                # Only after accumulation
+                # after accumulation
                 if acc.sync_gradients:
                     step += 1
-
                     if step % cfg.train.checkpoint_every == 0 and acc.is_main_process:
                         self._save_checkpoint(step)
-
                     if step >= total_steps:
                         break
 
         except KeyboardInterrupt:
-            log.warning('Training interrupted by user. Saving checkpoint...')
+            log.warning("Interrupted by user — saving checkpoint…")
             if acc.is_main_process:
                 self._save_checkpoint(f"interrupt_{step}")
 
@@ -242,21 +238,20 @@ class LoRATrainer:
             self._save_checkpoint("final")
 
         duration = time.time() - t0
-        return dict(step=step, seconds=duration)
+        return {"step": step, "seconds": duration}
 
     def validate(self):
-        log.info('Validation not yet implemented.')
+        log.info("Validation loop not implemented yet.")
         pass
 
-    # ---------- saving ----------
-    def _save_checkpoint(self, tag: str):
-        path = self.cfg.output_dir / f"ckpt-{tag}"
-        path.mkdir(exist_ok=True, parents=True)
+    # saving
 
+    def _save_checkpoint(self, tag: str):
+        out = self.cfg.output_dir / f"ckpt-{tag}"
+        out.mkdir(exist_ok=True, parents=True)
         unwrapped = self.accel.unwrap_model(self.unet)
         if isinstance(unwrapped, PeftModel):
-            unwrapped.save_pretrained(str(path))
+            unwrapped.save_pretrained(str(out))
         else:
-            torch.save(unwrapped.state_dict(), path / "pytorch_model.bin")
-
-        log.info(f"Saved checkpoint to {path}")
+            torch.save(unwrapped.state_dict(), out / "pytorch_model.bin")
+        log.info(f"Saved checkpoint → {out}")
