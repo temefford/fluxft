@@ -2,7 +2,6 @@
 from __future__ import annotations
 import torch
 from peft import LoraConfig
-from diffusers.models.attention_processor import LoRAAttnProcessor
 
 import logging
 
