@@ -24,16 +24,20 @@ from ..utils import set_logging, seed_everything
 log = logging.getLogger(__name__)
 
 
-# Set up file logging for all logs
+# Set up dedicated SHAPE_DEBUG file logger
+import logging
+import os
 os.makedirs(os.path.join(os.path.dirname(__file__), '../../logs'), exist_ok=True)
+shape_debug_logger = logging.getLogger('shape_debug')
+for h in shape_debug_logger.handlers[:]:
+    shape_debug_logger.removeHandler(h)
+shape_debug_logger.setLevel(logging.WARNING)
 file_handler = logging.FileHandler(os.path.join(os.path.dirname(__file__), '../../logs/last_train.log'), mode='w')
-file_handler.setLevel(logging.DEBUG)
+file_handler.setLevel(logging.WARNING)
 formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 file_handler.setFormatter(formatter)
-root_logger = logging.getLogger()
-root_logger.setLevel(logging.DEBUG)
-root_logger.addHandler(file_handler)
-root_logger.propagate = True
+shape_debug_logger.addHandler(file_handler)
+shape_debug_logger.propagate = False
 
 class LoRATrainer:
     """Wraps accelerator, data, and training loop."""
@@ -170,8 +174,8 @@ class LoRATrainer:
                         b, c, h, w = latents.shape
                         lat = latents.permute(0, 2, 3, 1).reshape(b, h * w, c)
                         # [SHAPE_DEBUG] Only this log is kept for shape debugging
-                        log.warning(f"[SHAPE_DEBUG] latents.shape={latents.shape} c={c} lat.shape={lat.shape}")
-                        for handler in log.handlers:
+                        shape_debug_logger.warning(f"[SHAPE_DEBUG] latents.shape={latents.shape} c={c} lat.shape={lat.shape}")
+                        for handler in shape_debug_logger.handlers:
                             handler.flush()
                         lat = self.latent_proj(lat)
 
