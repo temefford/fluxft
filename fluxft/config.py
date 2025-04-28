@@ -26,7 +26,7 @@ class TrainConfig(BaseModel):
     checkpoint_every: int = 200
 
 class DataConfig(BaseModel):
-    dataset_type: str = Field("imagefolder", regex="^(imagefolder|hf_metadata)$")
+    dataset_type: str = Field("imagefolder", pattern="^(imagefolder|hf_metadata)$")
     data_dir: Path = _DEFAULT_DATA_DIR
     image_column: str = "hash"
     caption_column: str = "caption"
