@@ -158,8 +158,9 @@ class LoRATrainer:
                         # Prepare latents
                         b, c, h, w = latents.shape
                         lat = latents.permute(0, 2, 3, 1).reshape(b, h * w, c)
+                        log.info(f"latents.shape={latents.shape}, c={c}, lat.shape={lat.shape}")
                         lat = self.latent_proj(lat)
-                        log.info(f"latents.shape={latents.shape}, lat.shape (after proj)={lat.shape}")
+                        log.info(f"lat.shape (after proj)={lat.shape}")
 
                         # Add noise
                         noise = torch.randn_like(lat, device=lat.device)
