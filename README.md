@@ -29,7 +29,7 @@ The FLUX-LoRA Fine-Tuning Toolkit is a production-grade Python package designed 
    
 2. Install the package:  
    ```bash  
-   pip install -e .  
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 
    ```  
    
 3. Configure your fine-tuning parameters:  
