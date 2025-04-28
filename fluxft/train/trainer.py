@@ -180,7 +180,10 @@ class LoRATrainer:
                         # Create or update the projection layer if needed
                         if self.latent_proj is None or self.latent_proj.in_features != c:
                             device = lat.device
-                            self.latent_proj = torch.nn.Linear(c, 3072).to(device)
+                            dtype = lat.dtype
+                            self.latent_proj = torch.nn.Linear(c, 3072).to(device=device, dtype=dtype)
+                        # Ensure projection layer is on correct device and dtype
+                        self.latent_proj = self.latent_proj.to(device=lat.device, dtype=lat.dtype)
                         lat = self.latent_proj(lat)
 
                         # Add noise
