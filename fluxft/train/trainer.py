@@ -107,6 +107,7 @@ class LoRATrainer:
 
         components = (
             self.unet,
+            self.pipe.vae,
             self.opt,
             self.lr_sched,
             self.train_dl,
@@ -115,6 +116,7 @@ class LoRATrainer:
         prepared = self.accel.prepare(*components)
         (
             self.unet,
+            self.pipe.vae,
             self.opt,
             self.lr_sched,
             self.train_dl,
