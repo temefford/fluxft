@@ -153,6 +153,17 @@ class LoRATrainer:
                         # Prepare latents
                         b, c, h, w = latents.shape
                         lat = latents.permute(0, 2, 3, 1).reshape(b, h * w, c)
+                        log.info(f"latents.shape={latents.shape}, lat.shape={lat.shape}")
+                        # Try to log the expected input features of the first Linear layer in the transformer
+                        first_linear = None
+                        for m in self.unet.modules():
+                            if isinstance(m, torch.nn.Linear):
+                                first_linear = m
+                                break
+                        if first_linear:
+                            log.info(f"First Linear layer in transformer: in_features={first_linear.in_features}, out_features={first_linear.out_features}")
+                        else:
+                            log.warning("No Linear layer found in transformer. Cannot determine expected input features.")
 
                         # Add noise
                         noise = torch.randn_like(lat, device=lat.device)
