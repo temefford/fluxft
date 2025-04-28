@@ -49,8 +49,8 @@ class LoRATrainer:
         import torch.backends.cudnn
         torch.backends.cudnn.benchmark = True
 
-        # Latent projection layer: 64 (VAE channels) -> 3072 (transformer input)
-        self.latent_proj = torch.nn.Linear(64, 3072)
+        # Latent projection layer: dynamically set input size to match VAE output channels
+        self.latent_proj = None
 
         self._init_accelerator()
         self._load_pipeline()
@@ -177,6 +177,10 @@ class LoRATrainer:
                         shape_debug_logger.warning(f"[SHAPE_DEBUG] latents.shape={latents.shape} c={c} lat.shape={lat.shape}")
                         for handler in shape_debug_logger.handlers:
                             handler.flush()
+                        # Create or update the projection layer if needed
+                        if self.latent_proj is None or self.latent_proj.in_features != c:
+                            device = lat.device
+                            self.latent_proj = torch.nn.Linear(c, 3072).to(device)
                         lat = self.latent_proj(lat)
 
                         # Add noise
