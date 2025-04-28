@@ -132,27 +132,30 @@ class LoRATrainer:
         )
 
         # prepare everything with accelerate
-        components = (
+        components = [
             self.unet,
             self.pipe.vae,
             self.latent_proj,
             self.opt,
             self.lr_sched,
             self.train_dl,
-            *([self.val_dl] if self.val_dl else []),
-        )
+        ]
+        if self.val_dl is not None:
+            components.append(self.val_dl)
         prepared = self.accel.prepare(*components)
-        (
-            self.unet,
-            self.pipe.vae,
-            self.latent_proj,
-            self.opt,
-            self.lr_sched,
-            self.train_dl,
-            *rest,
-        ) = prepared
-        if self.val_dl:
-            self.val_dl = rest[0]
+        self.unet = prepared[0]
+        self.pipe.vae = prepared[1]
+        self.latent_proj = prepared[2]
+        self.opt = prepared[3]
+        self.lr_sched = prepared[4]
+        self.train_dl = prepared[5]
+        if self.val_dl is not None:
+            self.val_dl = prepared[6]
+        # Assert all components are non-None
+        assert self.unet is not None, "self.unet is None after accelerate.prepare"
+        assert self.pipe.vae is not None, "self.pipe.vae is None after accelerate.prepare"
+        assert self.latent_proj is not None, "self.latent_proj is None after accelerate.prepare"
+
 
     # public API
 
