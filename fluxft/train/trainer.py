@@ -53,7 +53,7 @@ class LoRATrainer:
         )
 
     def _load_pipeline(self):
-        dtype = (
+        self.dtype = (
             torch.float16 if self.cfg.train.mixed_precision == "fp16"
             else torch.bfloat16 if self.cfg.train.mixed_precision == "bf16"
             else torch.float32
@@ -62,7 +62,7 @@ class LoRATrainer:
         self.pipe = FluxPipeline.from_pretrained(
             self.cfg.train.model_id,
             revision=self.cfg.train.revision,
-            torch_dtype=dtype,
+            torch_dtype=self.dtype,
         )
         # Replace scheduler with DDPMScheduler for training
         self.noise_scheduler = DDPMScheduler.from_config(
@@ -141,7 +141,7 @@ class LoRATrainer:
                 try:
                     with acc.accumulate(self.unet):
                         imgs = batch["pixel_values"].to(
-                            acc.device, dtype=acc.state.mixed_precision_dtype
+                            acc.device, dtype=self.dtype
                         )
 
                         # VAE encoding
