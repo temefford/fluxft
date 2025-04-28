@@ -7,7 +7,7 @@ log_level: INFO
 lora:
   rank: 16
   dropout: 0.1
-  target_modules: ["to_q", "to_k", "to_v"]
+  target_modules: ["attn.processor"]
 
 train:
   model_id: black-forest-labs/FLUX.1-schnell
