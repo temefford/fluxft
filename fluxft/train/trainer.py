@@ -26,7 +26,7 @@ log = logging.getLogger(__name__)
 
 # Set up file logging for all logs
 os.makedirs(os.path.join(os.path.dirname(__file__), '../../logs'), exist_ok=True)
-file_handler = logging.FileHandler(os.path.join(os.path.dirname(__file__), '../../logs/last_train.log'))
+file_handler = logging.FileHandler(os.path.join(os.path.dirname(__file__), '../../logs/last_train.log'), mode='w')
 file_handler.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 file_handler.setFormatter(formatter)
@@ -168,6 +168,8 @@ class LoRATrainer:
                         lat = latents.permute(0, 2, 3, 1).reshape(b, h * w, c)
                         # [SHAPE_DEBUG] Only this log is kept for shape debugging
                         log.warning(f"[SHAPE_DEBUG] latents.shape={latents.shape} c={c} lat.shape={lat.shape}")
+                        for handler in log.handlers:
+                            handler.flush()
                         lat = self.latent_proj(lat)
 
                         # Add noise
