@@ -25,7 +25,9 @@ from ..utils import set_logging, seed_everything
 # set up a file logger for shape debugging
 shape_debug_logger = logging.getLogger("shape_debug")
 shape_debug_logger.setLevel(logging.WARNING)
-fh = logging.FileHandler(Path(__file__).parent.parent / "logs/last_train.log", mode="w")
+logs_dir = Path(__file__).parent.parent / "logs"
+logs_dir.mkdir(parents=True, exist_ok=True)
+fh = logging.FileHandler(logs_dir / "last_train.log", mode="w")
 fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 shape_debug_logger.addHandler(fh)
 shape_debug_logger.propagate = False
