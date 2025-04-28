@@ -25,7 +25,7 @@ train:
 
 data:
   dataset_type: hf_metadata
-  data_dir: /Users/theo/Documents/fluxft/sorted_art/Abstract-Art
+  data_dir: /workspace/fluxft/sorted_art/Abstract-Expressionism  # Change to your RunPod volume mount
   img_size: 1200
   image_column: hash
   caption_column: caption
