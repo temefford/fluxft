@@ -18,7 +18,7 @@ class TrainConfig(BaseModel):
     batch_size: int = Field(2, ge=1)
     gradient_accum_steps: int = Field(4, ge=1)
     max_steps: int = 1000
-    mixed_precision: str = Field("fp16", regex="^(fp16|bf16|no)$")
+    mixed_precision: str = Field("fp16", pattern="^(fp16|bf16|no)$")
     epochs: int = 1
     seed: int = 42
     scheduler: str = "cosine"

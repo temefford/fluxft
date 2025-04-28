@@ -30,6 +30,8 @@ The FLUX-LoRA Fine-Tuning Toolkit is a production-grade Python package designed 
 2. Install the package:  
    ```bash  
    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 
+   pip install -r requirements.txt
+   pip install xformers
    ```  
    
 3. Configure your fine-tuning parameters:  
