@@ -118,16 +118,25 @@ class LoRATrainer:
             num_training_steps=total_steps,
         )
 
+        # Move VAE and transformer to device and dtype before wrapping
+        device = self.accel.device
+        self.pipe.vae = self.pipe.vae.to(device, dtype=self.dtype)
+        self.transformer = self.transformer.to(device, dtype=self.dtype)
+
         # Prepare with accelerate
-        components = [self.transformer, self.opt, self.lr_sched, self.train_dl]
+        components = [self.pipe.vae, self.transformer, self.opt, self.lr_sched, self.train_dl]
         if self.val_dl is not None:
             components.append(self.val_dl)
         prepared = self.accel.prepare(*components)
 
         # Unpack
-        self.transformer, self.opt, self.lr_sched, self.train_dl, *rest = prepared
+        self.pipe.vae, self.transformer, self.opt, self.lr_sched, self.train_dl, *rest = prepared
         if self.val_dl is not None:
             self.val_dl = rest[0]
+        # Re-apply device and dtype to ensure modules are on GPU
+        device = self.accel.device
+        self.pipe.vae = self.pipe.vae.to(device, dtype=self.dtype)
+        self.transformer = self.transformer.to(device, dtype=self.dtype)
 
     def train(self) -> Dict[str, Any]:
         cfg, acc = self.cfg, self.accel
