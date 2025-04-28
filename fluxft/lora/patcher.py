@@ -7,6 +7,11 @@ from diffusers.models.attention_processor import LoRAAttnProcessor
 import logging
 
 def add_lora_to_unet(unet, lora_cfg: LoraConfig):
+    """
+    Patch all attention processors in the UNet. For each processor, if its name matches a LoRA target,
+    replace it with a LoRAAttnProcessor; otherwise, keep the original processor. This guarantees the number
+    of processors matches the number of layers, preventing ValueError.
+    """
     lora_procs = {}
     patched = []
     for name, module in unet.attn_processors.items():
@@ -18,6 +23,8 @@ def add_lora_to_unet(unet, lora_cfg: LoraConfig):
                 train_kv=True,
             )
             patched.append(name)
+        else:
+            lora_procs[name] = module  # keep original
     if not patched:
         logging.warning(f"No LoRA modules patched in UNet! Target modules: {lora_cfg.target_modules}")
     else:
