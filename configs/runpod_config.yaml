@@ -24,10 +24,10 @@ train:
   checkpoint_every: 200
 
 data:
-  dataset_type: imagefolder  # or 'hf_metadata' if using metadata.json
-  data_dir: /workspace/fluxft/sorted_art/Abstract-Expressionism  # Change to your RunPod volume mount
+  dataset_type: hf_metadata
+  data_dir: /Users/theo/Documents/fluxft/sorted_art/Abstract-Art
   img_size: 1200
-  image_column: hash         # or filename if using full names
+  image_column: hash
   caption_column: caption
   validation_split: 0.1
 

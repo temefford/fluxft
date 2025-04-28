@@ -43,7 +43,7 @@ def preprocess_fn(example, cfg: DataConfig, processor, img_size: int):
         img_name = str(example.get("hash")) + ".jpg"
         caption = example.get("caption", "")
     else:
-        img_name = str(example[cfg.image_column])
+        img_name = str(example.get("hash")) + ".jpg"
         caption = example.get(cfg.caption_column, "")
     img_path = Path(image_root) / img_name
     if not img_path.exists():
