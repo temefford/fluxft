@@ -1,0 +1,2 @@
+[console_scripts]
+fluxft = fluxft.cli:app

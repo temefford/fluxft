@@ -1,0 +1,38 @@
+# Example config for FLUX-LoRA fine-tuning on RunPod
+# Adjust paths and parameters as needed for your dataset and hardware
+
+output_dir: outputs/runpod-exp
+log_level: INFO
+
+lora:
+  rank: 16
+  dropout: 0.1
+  target_modules: ["to_q", "to_k", "to_v"]
+
+train:
+  model_id: black-forest-labs/FLUX.1-schnell
+  revision: main
+  learning_rate: 1e-4
+  batch_size: 2
+  gradient_accum_steps: 4
+  max_steps: 1000
+  mixed_precision: fp16
+  epochs: 1
+  seed: 42
+  scheduler: cosine
+  warmup_steps: 50
+  checkpoint_every: 200
+
+data:
+  dataset_type: imagefolder  # or 'hf_metadata' if using metadata.json
+  data_dir: /workspace/fluxft/sorted_art/Abstract-Expressionism  # Change to your RunPod volume mount
+  img_size: 1200
+  image_column: hash         # or filename if using full names
+  caption_column: caption
+  validation_split: 0.1
+
+search:
+  lr: [5e-5, 1e-4, 2e-4]
+  rank: [4, 8, 16, 32]
+  dropout: [0.0, 0.05, 0.1]
+  batch_size: [1, 2, 4]
