@@ -19,12 +19,7 @@ def add_lora_to_unet(unet, lora_cfg: LoraConfig):
     logging.info(f"LoRA target modules: {lora_cfg.target_modules}")
     for name, module in unet.attn_processors.items():
         if any(t in name for t in lora_cfg.target_modules):
-            lora_procs[name] = LoRAAttnProcessor(
-                r=lora_cfg.r,
-                lora_alpha=lora_cfg.lora_alpha,
-                dropout=lora_cfg.lora_dropout,
-                train_kv=True,
-            )
+            lora_procs[name] = LoRAAttnProcessor()
             patched.append(name)
         else:
             lora_procs[name] = module  # keep original
