@@ -190,12 +190,21 @@ class LoRATrainer:
 
                         # add noise
                         noise = torch.randn_like(lat_proj)
+
+                        # --- DEBUG: log and check scheduler timesteps ---
+                        num_train_timesteps = self.noise_scheduler.config.num_train_timesteps
+                        log.warning(f"num_train_timesteps={num_train_timesteps}")
+                        assert isinstance(num_train_timesteps, int) and num_train_timesteps > 0 and num_train_timesteps < 100_000, "num_train_timesteps must be a finite positive integer"
+
                         ts = torch.randint(
                             0,
-                            self.noise_scheduler.config.num_train_timesteps,
+                            num_train_timesteps,
                             (b,),
                             device=lat_proj.device,
                         ).long()
+                        log.warning(f"Sampled ts: {ts}")
+                        assert torch.isfinite(ts).all(), "Non-finite timestep detected!"
+
                         lat_noisy = self.noise_scheduler.add_noise(lat_proj, noise, ts)
 
                         # predict
