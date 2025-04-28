@@ -7,7 +7,11 @@ from typing import Dict, Any
 
 import torch
 import torch.nn.functional as F
-from accelerate import Accelerator, ProjectConfiguration
+from accelerate import Accelerator
+try:
+    from accelerate import ProjectConfiguration
+except ImportError:
+    ProjectConfiguration = None
 from diffusers import FluxPipeline, DDPMScheduler
 from diffusers.optimization import get_scheduler
 from peft import LoraConfig, PeftModel
@@ -36,10 +40,12 @@ class LoRATrainer:
 
     # ---------- internal helpers ----------
     def _init_accelerator(self):
-        pcfg = ProjectConfiguration(
-            project_dir=str(self.cfg.output_dir),
-            logging_dir=str(self.cfg.output_dir / "logs"),
-        )
+        pcfg = None
+        if ProjectConfiguration is not None:
+            pcfg = ProjectConfiguration(
+                project_dir=str(self.cfg.output_dir),
+                logging_dir=str(self.cfg.output_dir / "logs"),
+            )
         self.accel = Accelerator(
             gradient_accumulation_steps=self.cfg.train.gradient_accum_steps,
             mixed_precision=self.cfg.train.mixed_precision,
