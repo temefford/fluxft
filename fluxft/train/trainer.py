@@ -151,6 +151,9 @@ class LoRATrainer:
         self.train_dl = prepared[5]
         if self.val_dl is not None:
             self.val_dl = prepared[6]
+        # Debug log to identify NoneType issues
+        log.warning(f"[DEBUG] post-prepare types: unet={type(self.unet)}, vae={type(self.pipe.vae)}, latent_proj={type(self.latent_proj)}, opt={type(self.opt)}, lr_sched={type(self.lr_sched)}, train_dl={type(self.train_dl)}, val_dl={type(self.val_dl) if self.val_dl is not None else 'None'}")
+        log.warning(f"[DEBUG] post-prepare values: unet={self.unet}, vae={self.pipe.vae}, latent_proj={self.latent_proj}, opt={self.opt}, lr_sched={self.lr_sched}, train_dl={self.train_dl}, val_dl={self.val_dl if self.val_dl is not None else 'None'}")
         # Assert all components are non-None
         assert self.unet is not None, "self.unet is None after accelerate.prepare"
         assert self.pipe.vae is not None, "self.pipe.vae is None after accelerate.prepare"
