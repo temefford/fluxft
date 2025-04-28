@@ -24,6 +24,14 @@ from ..utils import set_logging, seed_everything
 log = logging.getLogger(__name__)
 
 
+# Set up file logging for all logs
+os.makedirs(os.path.join(os.path.dirname(__file__), '../../logs'), exist_ok=True)
+file_handler = logging.FileHandler(os.path.join(os.path.dirname(__file__), '../../logs/last_train.log'))
+file_handler.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
+file_handler.setFormatter(formatter)
+logging.getLogger().addHandler(file_handler)
+
 class LoRATrainer:
     """Wraps accelerator, data, and training loop."""
 
