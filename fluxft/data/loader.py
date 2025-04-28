@@ -22,8 +22,13 @@ def build_dataset(cfg: DataConfig, img_size: int):
     if cfg.dataset_type == "imagefolder":
         ds = datasets.load_dataset("imagefolder", data_dir=str(cfg.data_dir), split="train")
     else:  # hf_metadata
-        meta = cfg.data_dir / "metadata.json"
+        meta = Path(cfg.data_dir) / "metadata.json"
         ds = datasets.load_dataset("json", data_files=str(meta), split="train")
+        # For metadata, set the image_column to 'hash' and caption_column to 'caption' if not already set
+        if not hasattr(cfg, 'image_column') or not cfg.image_column:
+            cfg.image_column = 'hash'
+        if not hasattr(cfg, 'caption_column') or not cfg.caption_column:
+            cfg.caption_column = 'caption'
     seed_everything(42)
     if cfg.validation_split:
         ds = ds.shuffle(seed=42)
@@ -33,22 +38,21 @@ import logging
 
 def preprocess_fn(example, cfg: DataConfig, processor, img_size: int):
     image_root = cfg.data_dir
-    img_name = str(example[cfg.image_column])
-    # Try multiple extensions
-    extensions = ['.jpg', '.jpeg', '.png', '.bmp']
-    img_path = None
-    for ext in extensions:
-        candidate = Path(image_root) / f"{img_name}{ext}"
-        if candidate.exists():
-            img_path = candidate
-            break
-    if img_path is None:
-        logging.warning(f"Image not found for {img_name} with extensions {extensions}")
-        return None  # Optionally: handle missing image more gracefully
+    # For metadata datasets, image name is the 'hash' key with '.jpg' appended
+    if cfg.dataset_type == "hf_metadata":
+        img_name = str(example.get("hash")) + ".jpg"
+        caption = example.get("caption", "")
+    else:
+        img_name = str(example[cfg.image_column])
+        caption = example.get(cfg.caption_column, "")
+    img_path = Path(image_root) / img_name
+    if not img_path.exists():
+        logging.warning(f"Image not found: {img_path}")
+        return None
     try:
         img = Image.open(img_path).convert("RGB")
         example["pixel_values"] = processor(img)
-        example["input_ids_2"] = example.get(cfg.caption_column, "")
+        example["input_ids_2"] = caption
     except Exception as e:
         logging.warning(f"Failed to load/process image {img_path}: {e}")
         return None
