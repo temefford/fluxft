@@ -30,7 +30,10 @@ file_handler = logging.FileHandler(os.path.join(os.path.dirname(__file__), '../.
 file_handler.setLevel(logging.DEBUG)
 formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
 file_handler.setFormatter(formatter)
-logging.getLogger().addHandler(file_handler)
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.DEBUG)
+root_logger.addHandler(file_handler)
+root_logger.propagate = True
 
 class LoRATrainer:
     """Wraps accelerator, data, and training loop."""
