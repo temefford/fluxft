@@ -2,12 +2,14 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import List
-import torch, datasets
+import torch
+import datasets
 from PIL import Image
 from torchvision import transforms
 from ..config import DataConfig
 from ..utils import seed_everything
 from diffusers.utils import PIL_INTERPOLATION
+import logging  # Ensure logging is imported at the top
 
 def default_transforms(res: int = 1200):
     return transforms.Compose(
@@ -34,9 +36,7 @@ def build_dataset(cfg: DataConfig, img_size: int):
         ds = ds.shuffle(seed=42)
     return ds
 
-import logging
-
-def preprocess_fn(example, cfg: DataConfig, processor, img_size: int):
+def preprocess_fn(example, cfg: DataConfig, processor, img_size: int, tokenizer=None):
     image_root = cfg.data_dir
     # For metadata datasets, image name is the 'hash' key with '.jpg' appended
     if cfg.dataset_type == "hf_metadata":
@@ -52,13 +52,27 @@ def preprocess_fn(example, cfg: DataConfig, processor, img_size: int):
     try:
         img = Image.open(img_path).convert("RGB")
         example["pixel_values"] = processor(img)
-        example["input_ids_2"] = caption
+        if tokenizer is not None:
+            tokens = tokenizer(
+                caption,
+                padding="max_length",
+                truncation=True,
+                max_length=tokenizer.model_max_length,
+                return_tensors="pt"
+            )
+            example["input_ids"] = tokens["input_ids"].squeeze(0)
+            example["attention_mask"] = tokens["attention_mask"].squeeze(0)
+        else:
+            example["input_ids"] = caption
+            example["attention_mask"] = None
     except Exception as e:
         logging.warning(f"Failed to load/process image {img_path}: {e}")
         return None
     return example
 
-def build_dataloaders(cfg: DataConfig, batch_size: int, img_size: int):
+from .collate import collate_fn
+
+def build_dataloaders(cfg: DataConfig, batch_size: int, img_size: int, tokenizer=None):
     processor = default_transforms(img_size)
     ds_all = build_dataset(cfg, img_size)
     # split
@@ -69,7 +83,7 @@ def build_dataloaders(cfg: DataConfig, batch_size: int, img_size: int):
         train_ds, val_ds = ds_all, None
     train_ds = train_ds.map(
         preprocess_fn,
-        fn_kwargs=dict(cfg=cfg, processor=processor, img_size=img_size),
+        fn_kwargs=dict(cfg=cfg, processor=processor, img_size=img_size, tokenizer=tokenizer),
         remove_columns=train_ds.column_names,
     )
     # Remove None entries from train_ds
@@ -77,7 +91,7 @@ def build_dataloaders(cfg: DataConfig, batch_size: int, img_size: int):
     if val_ds:
         val_ds = val_ds.map(
             preprocess_fn,
-            fn_kwargs=dict(cfg=cfg, processor=processor, img_size=img_size),
+            fn_kwargs=dict(cfg=cfg, processor=processor, img_size=img_size, tokenizer=tokenizer),
             remove_columns=val_ds.column_names,
         )
         val_ds = val_ds.filter(lambda x: x is not None)
@@ -87,6 +101,7 @@ def build_dataloaders(cfg: DataConfig, batch_size: int, img_size: int):
         batch_size=batch_size,
         shuffle=True,
         pin_memory=True,
+        collate_fn=collate_fn,
     )
     # fluxft/data/loader.py
     val_loader = None
@@ -96,5 +111,6 @@ def build_dataloaders(cfg: DataConfig, batch_size: int, img_size: int):
             batch_size=batch_size,
             shuffle=False,
             pin_memory=True,
+            collate_fn=collate_fn,
         )
     return train_loader, val_loader

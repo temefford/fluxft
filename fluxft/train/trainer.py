@@ -100,10 +100,15 @@ class LoRATrainer:
         trans_c = self.transformer.config.in_channels
         self.latent_proj = torch.nn.Linear(latent_c, trans_c)
 
+        # Initialize tokenizer for text conditioning
+        from .tokenizer_util import get_tokenizer
+        self.tokenizer = get_tokenizer(self.cfg.train.model_id)
+
     def _prepare_data(self):
         img_size = getattr(self.cfg.data, "img_size", 1200)
+        # Pass tokenizer to dataloader
         self.train_dl, self.val_dl = build_dataloaders(
-            self.cfg.data, self.cfg.train.batch_size, img_size=img_size
+            self.cfg.data, self.cfg.train.batch_size, img_size=img_size, tokenizer=self.tokenizer
         )
 
         # Optimizer only over LoRA adapter params + projection
@@ -135,16 +140,8 @@ class LoRATrainer:
             self.val_dl = rest[0]
         # Ensure projection layer on correct device & dtype
         self.latent_proj = self.latent_proj.to(self.accel.device, dtype=self.dtype)
+        # No need to manually .to() VAE/transformer after accelerator.prepare
 
-        # Move VAE and transformer to device and dtype before wrapping
-        device = self.accel.device
-        self.pipe.vae = self.pipe.vae.to(device, dtype=self.dtype)
-        self.transformer = self.transformer.to(device, dtype=self.dtype)
-
-        # Re-apply device and dtype to ensure modules are on GPU
-        device = self.accel.device
-        self.pipe.vae = self.pipe.vae.to(device, dtype=self.dtype)
-        self.transformer = self.transformer.to(device, dtype=self.dtype)
 
     def train(self) -> Dict[str, Any]:
         cfg, acc = self.cfg, self.accel
@@ -168,35 +165,37 @@ class LoRATrainer:
                         latents = self.pipe.vae.encode(imgs).latent_dist.sample()
                         latents = latents * scaler
 
-                        # Flatten spatial dims and project to transformer channels
-                        b, c, h, w = latents.shape
-                        lat_flat = latents.permute(0, 2, 3, 1).reshape(b, h * w, c)
-                        shape_debug_logger.warning(f"[SHAPE] lat_flat={lat_flat.shape}")
-                        # Dynamically adjust projection layer if latent dim mismatch
-                        in_dim = lat_flat.size(-1)
-                        if self.latent_proj.in_features != in_dim:
-                            out_dim = self.latent_proj.out_features
-                            log.warning(f"Reinitializing latent_proj: in_features {self.latent_proj.in_features}->{in_dim}, out_features={out_dim}")
-                            self.latent_proj = torch.nn.Linear(in_dim, out_dim).to(acc.device, dtype=self.dtype)
-                        lat_proj = self.latent_proj(lat_flat)
-                        shape_debug_logger.warning(f"[SHAPE] lat_proj={lat_proj.shape}")
-                        # Add noise in projected space
-                        noise = torch.randn_like(lat_proj)
+                        # Add noise in latent space (before projection)
+                        noise = torch.randn_like(latents)
                         ts = torch.randint(
                             0,
                             self.noise_scheduler.config.num_train_timesteps,
-                            (b,),
-                            device=lat_proj.device,
+                            (latents.shape[0],),
+                            device=latents.device,
                         ).long()
-                        lat_noisy = self.noise_scheduler.add_noise(lat_proj, noise, ts)
+                        lat_noisy = self.noise_scheduler.add_noise(latents, noise, ts)
+
+                        # Flatten spatial dims and project to transformer channels
+                        b, c, h, w = lat_noisy.shape
+                        lat_flat = lat_noisy.permute(0, 2, 3, 1).reshape(b, h * w, c)
+                        shape_debug_logger.warning(f"[SHAPE] lat_flat={lat_flat.shape}")
+                        lat_proj = self.latent_proj(lat_flat)
+                        shape_debug_logger.warning(f"[SHAPE] lat_proj={lat_proj.shape}")
+
+                        # Text encoding & pooled projections
+                        input_ids = batch["input_ids"].to(acc.device)
+                        attention_mask = batch["attention_mask"].to(acc.device)
+                        text_outputs = self.pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
+                        txt_embeds = text_outputs[0]
+                        pooled_proj = self.pipe.text_encoder_2(txt_embeds).last_hidden_state
+                        shape_debug_logger.warning(f"[SHAPE] pooled_proj={pooled_proj.shape}")
 
                         # Forward through Flux’s transformer
                         out = self.transformer(
-                            hidden_states=lat_noisy,
+                            hidden_states=lat_proj,
                             timestep=ts,
                             encoder_hidden_states=None,
-                            pooled_projections=None,
-                            img_ids=torch.arange(h*w, device=lat_proj.device).repeat(b, 1),
+                            pooled_projections=pooled_proj,
                             txt_ids=None,
                         )
                         preds = out.sample

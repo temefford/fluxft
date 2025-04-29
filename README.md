@@ -25,28 +25,34 @@ The FLUX-LoRA Fine-Tuning Toolkit is a production-grade Python package designed 
 1. Clone the repository:  
    ```bash  
    git clone <this-repo>  
+   ```  
+   
+2. Create a conda environment:  
+   ```bash  
+   conda init
+   source ~./zshrc
    conda create -n fluxft python=3.10.14 -y
    conda activate fluxft
    ```  
    
-2. Install the package:  
+3. Install the package:  
    ```bash  
    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 
    pip install -r requirements.txt
    ```  
    
-3. Configure your fine-tuning parameters:  
+4. Configure your fine-tuning parameters:  
    ```bash  
    cp configs/ft_config.yaml my_run.yaml  
    # Edit my_run.yaml for necessary configurations  
    ```  
    
-4. Start fine-tuning:  
+5. Start fine-tuning:  
    ```bash  
    accelerate launch -m fluxft.cli finetune --cfg-path configs/runpod_config.yaml
    ```  
    
-5. Evaluate your fine-tuned model:  
+6. Evaluate your fine-tuned model:  
    ```bash  
    accelerate launch -m fluxft.cli evaluate --cfg-path configs/runpod_config.yaml --lora-path outputs/ckpt-final --prompts-file prompts.txt  
    ```  
