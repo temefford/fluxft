@@ -308,30 +308,45 @@ class LoRATrainer:
                             log.info(f"t5_emb used as-is: {t5_emb_proj.shape}")
 
                         # Forward & loss
-                        # Find transformer's first Linear layer and its input dim
-                        first_linear = None
-                        for m in self.transformer.modules():
-                            if isinstance(m, torch.nn.Linear):
-                                first_linear = m
-                                break
-                        if first_linear is not None:
-                            log.info(f"[DEBUG] First transformer Linear: {first_linear}, in_features={first_linear.in_features}, weight shape={first_linear.weight.shape}")
+                        log.info(f"Passing to transformer: hidden_states shape {lat_flat.shape}, ts shape {None}, encoder_hidden_states shape {t5_emb_proj.shape}, pooled_projections shape {clip_emb_proj.shape}")
+                        out = self.transformer(
+                            hidden_states=lat_flat,
+                            timestep=None,
+                            encoder_hidden_states=t5_emb_proj,
+                            pooled_projections=clip_emb_proj,
                             txt_ids=None,
                         )
                         preds = out.sample
+                        noise = torch.randn_like(lat)
                         loss = F.mse_loss(preds.float(), noise.float())
                         acc.backward(loss)
                         self.opt.step()
                         self.lr_sched.step()
                         self.opt.zero_grad()
 
-                except RuntimeError as e:
-                    if "out of memory" in str(e):
-                        log.warning("CUDA OOM, skipping batch…")
-                        torch.cuda.empty_cache()
-                        continue
-                    raise
+                except Exception as e:
+                    log.error(f"Error in training loop: {e}")
+                    log.info(f"lat_noisy shape: {lat_noisy.shape}")
 
+                    # CLIP conditioning
+                    captions = batch["captions"]
+                    log.info(f"captions: {captions}")
+                    clip_in = self.clip_tokenizer(
+                        captions, padding="longest", return_tensors="pt"
+                    ).to(acc.device)
+                    log.info(f"clip_in.input_ids shape: {clip_in['input_ids'].shape}")
+                    clip_out = self.pipe.text_encoder(**clip_in)
+                    clip_emb = clip_out.pooler_output
+                    log.info(f"clip_emb (pooler_output) shape: {clip_emb.shape}")
+                    pooled_dim = getattr(self.transformer, 'pooled_projection_dim', None)
+                    if pooled_dim is None and hasattr(self.transformer, 'config'):
+                        pooled_dim = getattr(self.transformer.config, 'pooled_projection_dim', None)
+                    if pooled_dim is not None and clip_emb.shape[-1] != pooled_dim:
+                        clip_emb_proj = torch.nn.Linear(clip_emb.shape[-1], pooled_dim, device=clip_emb.device, dtype=clip_emb.dtype)(clip_emb)
+                        log.info(f"clip_emb projected to pooled_dim {pooled_dim}: {clip_emb_proj.shape}")
+                    else:
+                        clip_emb_proj = clip_emb
+                        log.info(f"clip_emb used as-is: {clip_emb_proj.shape}")
                 # After each gradient accumulation
                 if acc.sync_gradients:
                     step += 1
