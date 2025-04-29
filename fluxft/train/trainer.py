@@ -155,6 +155,9 @@ class LoRATrainer:
         components = [self.pipe.vae, self.transformer, self.latent_proj, self.opt, self.lr_sched, self.train_dl]
         if self.val_dl is not None:
             components.append(self.val_dl)
+        # Debug: Log components before prepare
+        for idx, comp in enumerate(components):
+            log.warning(f"[PREPARE DEBUG] Pre-prepare Component {idx}: type={type(comp)}, is None={comp is None}, value={comp}")
         prepared = self.accel.prepare(*components)
 
         # Unpack with projection, matching the number of components
