@@ -21,6 +21,7 @@ from ..config import GlobalConfig
 from ..data.loader import build_dataloaders
 from ..lora.patcher import add_lora_to_unet
 from ..utils import set_logging, seed_everything
+from .tokenizer_util import get_clip_tokenizer, get_t5_tokenizer
 
 # — shape debug logger ————————————————————————————————
 shape_debug_logger = logging.getLogger("shape_debug")
@@ -100,15 +101,15 @@ class LoRATrainer:
         trans_c = self.transformer.config.in_channels
         self.latent_proj = torch.nn.Linear(latent_c, trans_c)
 
-        # Initialize tokenizer for text conditioning
-        from .tokenizer_util import get_tokenizer
-        self.tokenizer = get_tokenizer(self.cfg.train.model_id)
+        # Initialize CLIP and T5 tokenizers for text conditioning
+        self.clip_tokenizer = get_clip_tokenizer()
+        self.t5_tokenizer = get_t5_tokenizer()
 
     def _prepare_data(self):
         img_size = getattr(self.cfg.data, "img_size", 1200)
-        # Pass tokenizer to dataloader
+        # Pass CLIP tokenizer to dataloader
         self.train_dl, self.val_dl = build_dataloaders(
-            self.cfg.data, self.cfg.train.batch_size, img_size=img_size, tokenizer=self.tokenizer
+            self.cfg.data, self.cfg.train.batch_size, img_size=img_size, tokenizer=self.clip_tokenizer
         )
 
         # Optimizer only over LoRA adapter params + projection
