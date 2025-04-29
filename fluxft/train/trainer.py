@@ -201,11 +201,19 @@ class LoRATrainer:
                         log.info(f"pixel_values shape: {pix.shape}")
                         lat = self.pipe.vae.encode(pix).latent_dist.sample() * scaler
                         log.info(f"vae latents shape: {lat.shape}")
-                        lat = self.latent_proj(lat)  # [B, C, H, W]
-                        log.info(f"latent_proj output shape: {lat.shape}")
-                        b,c,h,w = lat.shape
-                        lat = lat.permute(0,2,3,1).reshape(b, h*w, c)
-                        log.info(f"lat after flatten shape: {lat.shape}")
+                        b, c, h, w = lat.shape
+                        # Dynamically (re)create latent_proj if needed
+                        trans_c = getattr(self.transformer, 'in_channels', None)
+                        if trans_c is None and hasattr(self.transformer, 'config'):
+                            trans_c = getattr(self.transformer.config, 'in_channels', None)
+                        if not hasattr(self, 'latent_proj') or self.latent_proj.in_channels != c or self.latent_proj.out_channels != trans_c:
+                            log.warning(f"Recreating latent_proj: in_channels={c}, out_channels={trans_c}")
+                            self.latent_proj = torch.nn.Conv2d(c, trans_c, 1).to(acc.device, dtype=self.dtype)
+                        lat_proj = self.latent_proj(lat)  # [B, trans_c, H, W]
+                        log.info(f"latent_proj output shape: {lat_proj.shape}")
+                        b, c2, h, w = lat_proj.shape
+                        lat_flat = lat_proj.permute(0,2,3,1).reshape(b, h*w, c2)
+                        log.info(f"lat after flatten shape: {lat_flat.shape}")
 
                         # Noise & scheduler
                         noise = torch.randn_like(lat)
