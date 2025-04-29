@@ -214,22 +214,19 @@ class LoRATrainer:
                         lat_proj = self.latent_proj(lat_flat)
                         shape_debug_logger.warning(f"[SHAPE] lat_proj={lat_proj.shape}")
 
-                        # Text encoding & pooled projections
-                        # Ensure token indices are proper dtype and device for embedding
+                        # Text encoding for cross-attention (CLIP embeddings)
                         input_ids = batch["input_ids"].long().to(acc.device)
                         attention_mask = batch["attention_mask"].long().to(acc.device)
                         text_outputs = self.pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
-                        txt_embeds = text_outputs[0]
-                        # Use embedding inputs directly to avoid embedding layer index errors
-                        pooled_proj = self.pipe.text_encoder_2(inputs_embeds=txt_embeds).last_hidden_state
-                        shape_debug_logger.warning(f"[SHAPE] pooled_proj={pooled_proj.shape}")
+                        clip_embeds = text_outputs.last_hidden_state
+                        shape_debug_logger.warning(f"[SHAPE] clip_embeds={clip_embeds.shape}")
 
-                        # Forward through Flux’s transformer
+                        # Forward through Flux’s transformer with CLIP cross-attention only
                         out = self.transformer(
                             hidden_states=lat_proj,
                             timestep=ts,
-                            encoder_hidden_states=None,
-                            pooled_projections=pooled_proj,
+                            encoder_hidden_states=clip_embeds,
+                            pooled_projections=None,
                             txt_ids=None,
                         )
                         preds = out.sample
