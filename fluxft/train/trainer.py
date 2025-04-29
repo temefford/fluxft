@@ -87,7 +87,12 @@ class LoRATrainer:
             revision=self.cfg.train.revision,
             torch_dtype=self.dtype,
         )
-
+        # --- PATCH: Force transformer in_channels to 256 so first Linear is rebuilt correctly ---
+        if hasattr(self.pipe, 'transformer'):
+            self.pipe.transformer.in_channels = 256
+            if hasattr(self.pipe.transformer, 'config'):
+                self.pipe.transformer.config.in_channels = 256
+        # -------------------------------------------------------------------------------
         # Replace inference scheduler with a training-friendly DDPMScheduler
         self.noise_scheduler = DDPMScheduler.from_config(
             self.pipe.scheduler.config, prediction_type="epsilon"
