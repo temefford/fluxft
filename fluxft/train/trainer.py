@@ -115,8 +115,8 @@ class LoRATrainer:
 
         # Build projection layer mapping VAE latents -> transformer channel space
         latent_c = self.pipe.vae.config.latent_channels
-        # Set transformer channel count to match x_embedder's expected input (64)
-        trans_c = 64
+        # Set transformer channel count to match transformer's first Linear expected input (256)
+        trans_c = 256
         self.latent_proj = torch.nn.Linear(latent_c, trans_c)
 
         # Initialize CLIP and T5 tokenizers for text conditioning
