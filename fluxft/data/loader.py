@@ -60,8 +60,8 @@ def preprocess_fn(example, cfg: DataConfig, processor, img_size: int, tokenizer=
                 max_length=tokenizer.model_max_length,
                 return_tensors="pt"
             )
-            example["input_ids"] = tokens["input_ids"].squeeze(0)
-            example["attention_mask"] = tokens["attention_mask"].squeeze(0)
+            example["input_ids"] = tokens["input_ids"].squeeze(0).cpu()
+            example["attention_mask"] = tokens["attention_mask"].squeeze(0).cpu()
         else:
             example["input_ids"] = caption
             example["attention_mask"] = None
