@@ -300,6 +300,19 @@ class LoRATrainer:
                             log.info(f"t5_emb used as-is: {t5_emb_proj.shape}")
 
                         # Forward & loss
+                        # Find transformer's first Linear layer and its input dim
+                        first_linear = None
+                        for m in self.transformer.modules():
+                            if isinstance(m, torch.nn.Linear):
+                                first_linear = m
+                                break
+                        if first_linear is not None:
+                            log.info(f"[DEBUG] First transformer Linear: {first_linear}, in_features={first_linear.in_features}, weight shape={first_linear.weight.shape}")
+                            if lat_flat.shape[-1] != first_linear.in_features:
+                                log.warning(f"[FIXUP] Projecting lat_flat from {lat_flat.shape[-1]} to {first_linear.in_features} to match transformer input")
+                                fixup_proj = torch.nn.Linear(lat_flat.shape[-1], first_linear.in_features).to(lat_flat.device, dtype=lat_flat.dtype)
+                                lat_flat = fixup_proj(lat_flat)
+                                log.info(f"lat_flat after robust fixup: {lat_flat.shape}")
                         log.info(f"Passing to transformer: hidden_states shape {lat_flat.shape}, ts shape {ts.shape}, encoder_hidden_states shape {t5_emb_proj.shape}, pooled_projections shape {clip_emb_proj.shape}")
                         out = self.transformer(
                             hidden_states=lat_flat,
