@@ -182,9 +182,9 @@ class LoRATrainer:
                     lat_noisy = self.noise_scheduler.add_noise(lat, noise, ts)
 
                     # CLIP conditioning
-                    caps = batch["input_ids_2"]
+                    captions = batch["captions"]
                     clip_in = self.clip_tokenizer(
-                        caps, padding="longest", return_tensors="pt"
+                        captions, padding="longest", return_tensors="pt"
                     ).to(acc.device)
                     clip_out = self.pipe.text_encoder(**clip_in)
                     clip_emb = clip_out.pooler_output
@@ -192,7 +192,7 @@ class LoRATrainer:
 
                     # T5 conditioning
                     t5_in = self.t5_tokenizer(
-                        caps, padding="max_length", truncation=True,
+                        captions, padding="max_length", truncation=True,
                         max_length=self.t5_tokenizer.model_max_length,
                         return_tensors="pt"
                     ).to(acc.device)

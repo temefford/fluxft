@@ -65,6 +65,8 @@ def preprocess_fn(example, cfg: DataConfig, processor, img_size: int, tokenizer=
         else:
             example["input_ids"] = caption
             example["attention_mask"] = None
+        # Keep original caption string for runtime tokenization
+        example["caption"] = caption
     except Exception as e:
         logging.warning(f"Failed to load/process image {img_path}: {e}")
         return None
