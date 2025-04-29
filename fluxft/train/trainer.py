@@ -160,7 +160,12 @@ class LoRATrainer:
             for batch in self.train_dl:
                 try:
                     with acc.accumulate(self.transformer):
-                        imgs = batch["pixel_values"].to(acc.device, dtype=self.dtype)
+                        # Move all tensors in batch to acc.device
+                        for k, v in batch.items():
+                            if isinstance(v, torch.Tensor):
+                                batch[k] = v.to(acc.device)
+
+                        imgs = batch["pixel_values"].to(dtype=self.dtype)
 
                         # Encode → latents
                         latents = self.pipe.vae.encode(imgs).latent_dist.sample()
@@ -184,8 +189,8 @@ class LoRATrainer:
                         shape_debug_logger.warning(f"[SHAPE] lat_proj={lat_proj.shape}")
 
                         # Text encoding & pooled projections
-                        input_ids = batch["input_ids"].to(acc.device)
-                        attention_mask = batch["attention_mask"].to(acc.device)
+                        input_ids = batch["input_ids"]
+                        attention_mask = batch["attention_mask"]
                         text_outputs = self.pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
                         txt_embeds = text_outputs[0]
                         pooled_proj = self.pipe.text_encoder_2(txt_embeds).last_hidden_state
