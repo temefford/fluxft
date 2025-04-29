@@ -24,7 +24,7 @@ from ..lora.patcher import add_lora_to_unet
 from ..utils import set_logging, seed_everything
 from .tokenizer_util import get_clip_tokenizer, get_t5_tokenizer
 
-# — shape debug logger ————————————————————————————————
+# — shape debug logger ——————————————————————————————————
 shape_debug_logger = logging.getLogger("shape_debug")
 shape_debug_logger.setLevel(logging.WARNING)
 logs_dir = Path(__file__).parents[1] / "logs"
@@ -38,18 +38,19 @@ shape_debug_logger.propagate = False
 log = logging.getLogger(__name__)
 
 def _patched_prepare_latent_image_ids(batch_size, height, width, device, dtype):
-    # replicate original logic but cast to Long at the end
+    # Keep original semantics, ensure indices are Long for embeddings
     latent_image_ids = torch.zeros(height, width, 3)
     latent_image_ids[..., 1] += torch.arange(height)[:, None]
     latent_image_ids[..., 2] += torch.arange(width)[None, :]
     latent_image_ids = latent_image_ids.reshape(height * width, 3)
-    # force integer type for embedding lookup
     return latent_image_ids.to(device=device, dtype=torch.long)
 
+# Patch the static method on the HF FluxPipeline
 _FluxPipeline._prepare_latent_image_ids = staticmethod(_patched_prepare_latent_image_ids)
 
+
 class LoRATrainer:
-    """Wraps accelerator, data, and the training loop for Flux-1 with LoRA."""
+    """Trainer for FLUX.1-Schnell with LoRA and correct shape handling."""
 
     def __init__(self, cfg: GlobalConfig):
         self.cfg = cfg
@@ -77,7 +78,6 @@ class LoRATrainer:
         )
 
     def _load_pipeline(self):
-        # Choose dtype
         mp = self.cfg.train.mixed_precision
         self.dtype = torch.float16 if mp == "fp16" else torch.bfloat16 if mp == "bf16" else torch.float32
 
@@ -87,19 +87,16 @@ class LoRATrainer:
             revision=self.cfg.train.revision,
             torch_dtype=self.dtype,
         )
-
-        # Replace inference scheduler with a training-friendly DDPMScheduler
+        # Scheduler for training
         self.noise_scheduler = DDPMScheduler.from_config(
             self.pipe.scheduler.config, prediction_type="epsilon"
         )
 
-        # Move all relevant modules to acc.device
-        self.pipe.text_encoder.to(self.accel.device)
-        self.pipe.text_encoder_2.to(self.accel.device)
-        self.pipe.vae.to(self.accel.device)
-        self.pipe.transformer.to(self.accel.device)
+        # Move core modules to device
+        for module in [self.pipe.vae, self.pipe.text_encoder, self.pipe.text_encoder_2, self.pipe.transformer]:
+            module.to(self.accel.device)
 
-        # **IMPORTANT**: FluxPipeline exposes the denoiser as `pipe.transformer`, not `pipe.unet`
+        # Apply LoRA to transformer
         lora_cfg = LoraConfig(
             r=self.cfg.lora.rank,
             lora_alpha=self.cfg.lora.rank,
@@ -108,36 +105,53 @@ class LoRATrainer:
         )
         self.transformer = add_lora_to_unet(self.pipe.transformer, lora_cfg)
 
-        # Freeze everything else
-        self.pipe.vae.requires_grad_(False)
-        self.pipe.text_encoder.requires_grad_(False)
-        self.pipe.text_encoder_2.requires_grad_(False)
+        # Freeze non-LoRA modules
+        for mod in [self.pipe.vae, self.pipe.text_encoder, self.pipe.text_encoder_2]:
+            mod.requires_grad_(False)
 
-        # Build projection layer mapping VAE latents -> transformer channel space
+        # — Correct latent projection with 1×1 conv —
         latent_c = self.pipe.vae.config.latent_channels
-        # Set transformer channel count to match x_embedder's expected input (64)
-        trans_c = 64
-        self.latent_proj = torch.nn.Linear(latent_c, trans_c)
+        trans_c = self.transformer.config.in_channels
+        self.latent_proj = torch.nn.Conv2d(
+            in_channels=latent_c,
+            out_channels=trans_c,
+            kernel_size=1,
+            bias=False
+        ).to(self.accel.device, dtype=self.dtype)
 
-        # Initialize CLIP and T5 tokenizers for text conditioning
+        # Tokenizers for text conditioning
         self.clip_tokenizer = get_clip_tokenizer()
         self.t5_tokenizer = get_t5_tokenizer()
 
+        # Text projection layers
+        clip_dim = self.pipe.text_encoder.config.hidden_size
+        pooled_dim = self.transformer.config.pooled_projection_dim
+        self.clip_proj = torch.nn.Linear(clip_dim, pooled_dim).to(self.accel.device, dtype=self.dtype)
+
+        t5_dim = self.pipe.text_encoder_2.config.hidden_size
+        cross_dim = self.transformer.config.cross_attention_dim or self.transformer.config.joint_attention_dim
+        self.t5_proj = torch.nn.Linear(t5_dim, cross_dim).to(self.accel.device, dtype=self.dtype)
+
     def _prepare_data(self):
         img_size = getattr(self.cfg.data, "img_size", 1200)
-        # Pass CLIP tokenizer to dataloader
         self.train_dl, self.val_dl = build_dataloaders(
-            self.cfg.data, self.cfg.train.batch_size, img_size=img_size, tokenizer=self.clip_tokenizer
+            self.cfg.data,
+            self.cfg.train.batch_size,
+            img_size=img_size,
+            tokenizer=self.clip_tokenizer
         )
 
-        # Optimizer only over LoRA adapter params + projection
-        trainable = [p for p in self.transformer.parameters() if p.requires_grad] + list(self.latent_proj.parameters())
+        # Optimizer over LoRA adapters + projection layers
+        trainable = (
+            [p for p in self.transformer.parameters() if p.requires_grad] +
+            list(self.latent_proj.parameters()) +
+            list(self.clip_proj.parameters()) +
+            list(self.t5_proj.parameters())
+        )
         self.opt = torch.optim.AdamW(trainable, lr=self.cfg.train.learning_rate, weight_decay=1e-2)
 
-        # LR scheduler
         total_steps = (
-            self.cfg.train.max_steps
-            if self.cfg.train.max_steps > 0
+            self.cfg.train.max_steps if self.cfg.train.max_steps > 0
             else len(self.train_dl) * self.cfg.train.epochs
         )
         self.lr_sched = get_scheduler(
@@ -147,140 +161,118 @@ class LoRATrainer:
             num_training_steps=total_steps,
         )
 
-        # Prepare with accelerate (include projection layer)
-        components = [self.pipe.vae, self.transformer, self.latent_proj, self.opt, self.lr_sched, self.train_dl]
+        components = [self.pipe.vae, self.transformer, self.latent_proj, self.clip_proj, self.t5_proj,
+                      self.opt, self.lr_sched, self.train_dl]
         if self.val_dl is not None:
             components.append(self.val_dl)
+
+        # Prepare with accelerate
         prepared = self.accel.prepare(*components)
-
-        # Unpack with projection, matching the number of components
+        # Unpack
+        (self.pipe.vae, self.transformer, self.latent_proj, self.clip_proj, self.t5_proj,
+         self.opt, self.lr_sched, self.train_dl, *rest) = prepared
         if self.val_dl is not None:
-            (self.pipe.vae, self.transformer, self.latent_proj, self.opt, self.lr_sched, self.train_dl, self.val_dl) = prepared
-        else:
-            (self.pipe.vae, self.transformer, self.latent_proj, self.opt, self.lr_sched, self.train_dl) = prepared
-        # Debug logging for prepared components
-        debug_components = [self.pipe.vae, self.transformer, self.latent_proj, self.opt, self.lr_sched, self.train_dl]
-        if self.val_dl is not None:
-            debug_components.append(self.val_dl)
-        for idx, comp in enumerate(debug_components):
-            log.warning(f"[DEBUG] Component {idx}: type={type(comp)}, is None={comp is None}, value={comp}")
-        log.warning(f"[DEBUG] self.dtype: {self.dtype}")
-        log.warning(f"[DEBUG] self.accel.device: {self.accel.device}")
-        # Ensure projection layer on correct device & dtype
-        assert self.latent_proj is not None, "latent_proj is None after accelerate.prepare!"
-        self.latent_proj = self.latent_proj.to(self.accel.device, dtype=self.dtype)
-        # No need to manually .to() VAE/transformer after accelerator.prepare
+            self.val_dl = rest[0]
 
+        # Ensure all on correct device & dtype
+        self.latent_proj.to(self.accel.device, dtype=self.dtype)
+        self.clip_proj.to(self.accel.device, dtype=self.dtype)
+        self.t5_proj.to(self.accel.device, dtype=self.dtype)
 
     def train(self) -> Dict[str, Any]:
         cfg, acc = self.cfg, self.accel
         total_steps = (
-            cfg.train.max_steps
-            if cfg.train.max_steps > 0
+            cfg.train.max_steps if cfg.train.max_steps > 0
             else len(self.train_dl) * cfg.train.epochs
         )
         log.info(f"Starting training for {total_steps} steps…")
 
-        step, t0 = 0, time.time()
-        scaler = self.pipe.vae.config.scaling_factor
+        step, start_time = 0, time.time()
+        scaling = self.pipe.vae.config.scaling_factor
 
-        try:
-            for batch in self.train_dl:
-                try:
-                    with acc.accumulate(self.transformer):
-                        # Move all tensors in batch to acc.device
-                        for k, v in batch.items():
-                            if isinstance(v, torch.Tensor):
-                                # Only cast float tensors (images/latents) to self.dtype, keep ids/masks as int
-                                if k == "pixel_values":
-                                    batch[k] = v.to(acc.device, dtype=self.dtype)
-                                else:
-                                    batch[k] = v.to(acc.device)
+        for batch in self.train_dl:
+            try:
+                with acc.accumulate(self.transformer):
+                    # Move and cast batch
+                    pixel_values = batch["pixel_values"].to(acc.device, dtype=self.dtype)
+                    captions = batch["captions"]  # list[str]
 
-                        imgs = batch["pixel_values"]
+                    # — Encode images to latents —
+                    latents = self.pipe.vae.encode(pixel_values).latent_dist.sample()
+                    latents = latents * scaling
+                    # Project via 1×1 conv and flatten
+                    latents = self.latent_proj(latents)
+                    b, c, h, w = latents.shape
+                    lat_flat = latents.permute(0, 2, 3, 1).reshape(b, h * w, c)
 
-                        # Encode → latents
-                        latents = self.pipe.vae.encode(imgs).latent_dist.sample()
-                        latents = latents * scaler
+                    # — Add noise —
+                    noise = torch.randn_like(lat_flat)
+                    ts = torch.randint(
+                        0,
+                        self.noise_scheduler.config.num_train_timesteps,
+                        (b,),
+                        device=lat_flat.device
+                    ).long()
+                    lat_noisy = self.noise_scheduler.add_noise(lat_flat, noise, ts)
 
-                        # Add noise in latent space (before projection)
-                        noise = torch.randn_like(latents)
-                        ts = torch.randint(
-                            0,
-                            self.noise_scheduler.config.num_train_timesteps,
-                            (latents.shape[0],),
-                            device=latents.device,
-                        ).long()
-                        lat_noisy = self.noise_scheduler.add_noise(latents, noise, ts)
+                    # — Text conditioning: CLIP —
+                    clip_inputs = self.clip_tokenizer(
+                        captions, padding="longest", return_tensors="pt"
+                    ).to(acc.device)
+                    clip_out = self.pipe.text_encoder(**clip_inputs)
+                    clip_embeds = clip_out.pooler_output  # [b, clip_dim]
+                    clip_proj = self.clip_proj(clip_embeds)  # [b, pooled_dim]
 
-                        # Flatten spatial dims and project to transformer channels
-                        b, c, h, w = lat_noisy.shape
-                        lat_flat = lat_noisy.permute(0, 2, 3, 1).reshape(b, h * w, c)
-                        shape_debug_logger.warning(f"[SHAPE] lat_flat={lat_flat.shape}")
-                        lat_proj = self.latent_proj(lat_flat)
-                        shape_debug_logger.warning(f"[SHAPE] lat_proj={lat_proj.shape}")
+                    # — Text conditioning: T5 —
+                    t5_inputs = self.t5_tokenizer(
+                        captions,
+                        padding="max_length",
+                        truncation=True,
+                        max_length=self.t5_tokenizer.model_max_length,
+                        return_tensors="pt"
+                    ).to(acc.device)
+                    t5_out = self.pipe.text_encoder_2(**t5_inputs)
+                    t5_embeds = t5_out.last_hidden_state  # [b, seq_len, t5_dim]
+                    prompt_embeds_2 = self.t5_proj(t5_embeds)  # [b, seq_len, cross_dim]
 
-                        # Text encoding for cross-attention (CLIP embeddings)
-                        input_ids = batch["input_ids"].long().to(acc.device)
-                        attention_mask = batch["attention_mask"].long().to(acc.device)
-                        text_outputs = self.pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
-                        clip_embeds = text_outputs.last_hidden_state
-                        shape_debug_logger.warning(f"[SHAPE] clip_embeds={clip_embeds.shape}")
+                    # — Forward through Flux transformer —
+                    out = self.transformer(
+                        hidden_states=lat_noisy,
+                        timestep=ts,
+                        encoder_hidden_states=prompt_embeds_2,
+                        pooled_projections=clip_proj,
+                        txt_ids=None
+                    )
+                    preds = out.sample
 
-                        # Project pooled_projections to 4096 if needed (for transformer only)
-                        pooled_proj = None
-                        if hasattr(text_outputs, "pooler_output") and text_outputs.pooler_output is not None:
-                            pooled_proj = text_outputs.pooler_output
-                        else:
-                            pooled_proj = clip_embeds.mean(dim=1, keepdim=True)
-                        if pooled_proj.shape[-1] != 4096:
-                            pooled_proj = torch.nn.Linear(pooled_proj.shape[-1], 4096, device=pooled_proj.device, dtype=pooled_proj.dtype)(pooled_proj)
-                        shape_debug_logger.warning(f"[SHAPE] pooled_proj={pooled_proj.shape}")
+                    # — Compute loss & backward —
+                    loss = F.mse_loss(preds.float(), noise.float())
+                    acc.backward(loss)
+                    self.opt.step()
+                    self.lr_sched.step()
+                    self.opt.zero_grad()
 
-                        # Use raw CLIP embeddings as encoder_hidden_states (no projection)
-                        enc_proj = clip_embeds
-                        shape_debug_logger.warning(f"[SHAPE] encoder_hidden_states={enc_proj.shape}")
-
-                        # Pass raw clip_embeds (no projection) to any text projection block, only project for transformer context
-                        out = self.transformer(
-                            hidden_states=lat_proj,
-                            timestep=ts,
-                            encoder_hidden_states=enc_proj,
-                            pooled_projections=pooled_proj,
-                            txt_ids=None,
-                        )
-                        preds = out.sample
-                        loss = F.mse_loss(preds.float(), noise.float())
-                        acc.backward(loss)
-                        self.opt.step()
-                        self.lr_sched.step()
-                        self.opt.zero_grad()
-
-                except RuntimeError as e:
-                    if "out of memory" in str(e):
-                        log.warning("CUDA OOM, skipping batch…")
-                        torch.cuda.empty_cache()
-                        continue
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    log.warning("CUDA OOM, skipping batch…")
+                    torch.cuda.empty_cache()
+                    continue
+                else:
                     raise
 
-                # After each gradient accumulation
-                if acc.sync_gradients:
-                    step += 1
-                    if step % cfg.train.checkpoint_every == 0 and acc.is_main_process:
-                        self._save_checkpoint(step)
-                    if step >= total_steps:
-                        break
-
-        except KeyboardInterrupt:
-            log.warning("Interrupted by user — saving checkpoint…")
-            if acc.is_main_process:
-                self._save_checkpoint(f"interrupt_{step}")
+            if acc.sync_gradients:
+                step += 1
+                if step % cfg.train.checkpoint_every == 0 and acc.is_main_process:
+                    self._save_checkpoint(step)
+                if step >= total_steps:
+                    break
 
         acc.wait_for_everyone()
         if acc.is_main_process:
             self._save_checkpoint("final")
 
-        return {"step": step, "seconds": time.time() - t0}
+        duration = time.time() - start_time
+        return {"step": step, "seconds": duration}
 
     def validate(self):
         log.info("Validation not implemented.")
