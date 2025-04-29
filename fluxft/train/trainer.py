@@ -113,10 +113,15 @@ class LoRATrainer:
         self.pipe.text_encoder.requires_grad_(False)
         self.pipe.text_encoder_2.requires_grad_(False)
 
-        # Build projection layer mapping VAE latents -> transformer channel space
+        # Build projection layer mapping VAE latents -> transformer channel space (use 1x1 Conv2d)
         latent_c = self.pipe.vae.config.latent_channels
         trans_c = self.transformer.config.in_channels
-        self.latent_proj = torch.nn.Linear(latent_c, trans_c)
+        self.latent_proj = torch.nn.Conv2d(
+            in_channels=latent_c,
+            out_channels=trans_c,
+            kernel_size=1,
+            bias=False
+        ).to(self.accel.device, dtype=self.dtype)
 
         # Initialize CLIP and T5 tokenizers for text conditioning
         self.clip_tokenizer = get_clip_tokenizer()
@@ -212,12 +217,13 @@ class LoRATrainer:
                         ).long()
                         lat_noisy = self.noise_scheduler.add_noise(latents, noise, ts)
 
-                        # Flatten spatial dims and project to transformer channels
+                        # Project latents to transformer channels using 1x1 Conv2d
                         b, c, h, w = lat_noisy.shape
-                        lat_flat = lat_noisy.permute(0, 2, 3, 1).reshape(b, h * w, c)
-                        shape_debug_logger.warning(f"[SHAPE] lat_flat={lat_flat.shape}")
-                        lat_proj = self.latent_proj(lat_flat)
+                        lat_proj = self.latent_proj(lat_noisy)  # shape: (b, trans_c, h, w)
                         shape_debug_logger.warning(f"[SHAPE] lat_proj={lat_proj.shape}")
+                        # Flatten for transformer input
+                        lat_proj = lat_proj.permute(0, 2, 3, 1).reshape(b, h * w, -1)
+                        shape_debug_logger.warning(f"[SHAPE] lat_proj_flat={lat_proj.shape}")
 
                         # Text encoding for cross-attention (CLIP embeddings)
                         input_ids = batch["input_ids"].long().to(acc.device)
