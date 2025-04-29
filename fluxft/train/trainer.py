@@ -15,6 +15,7 @@ except ImportError:
     ProjectConfiguration = None
 from diffusers import FluxPipeline, DDPMScheduler
 from diffusers.optimization import get_scheduler
+from diffusers.pipelines.flux.pipeline_flux import FluxPipeline as _FluxPipeline
 from peft import LoraConfig, PeftModel
 
 from ..config import GlobalConfig
@@ -45,7 +46,7 @@ def _patched_prepare_latent_image_ids(batch_size, height, width, device, dtype):
     # force integer type for embedding lookup
     return latent_image_ids.to(device=device, dtype=torch.long)
 
-
+_FluxPipeline._prepare_latent_image_ids = staticmethod(_patched_prepare_latent_image_ids)
 
 class LoRATrainer:
     """Wraps accelerator, data, and the training loop for Flux-1 with LoRA."""
