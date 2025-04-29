@@ -300,9 +300,9 @@ class LoRATrainer:
                             log.info(f"t5_emb used as-is: {t5_emb_proj.shape}")
 
                         # Forward & loss
-                        log.info(f"Passing to transformer: lat_noisy shape {lat_noisy.shape}, ts shape {ts.shape}, encoder_hidden_states shape {t5_emb_proj.shape}, pooled_projections shape {clip_emb_proj.shape}")
+                        log.info(f"Passing to transformer: hidden_states shape {lat_flat.shape}, ts shape {ts.shape}, encoder_hidden_states shape {t5_emb_proj.shape}, pooled_projections shape {clip_emb_proj.shape}")
                         out = self.transformer(
-                            hidden_states=lat_noisy,
+                            hidden_states=lat_flat,
                             timestep=ts,
                             encoder_hidden_states=t5_emb_proj,
                             pooled_projections=clip_emb_proj,
