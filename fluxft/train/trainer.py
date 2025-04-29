@@ -204,9 +204,9 @@ class LoRATrainer:
                         shape_debug_logger.warning(f"[SHAPE] lat_proj={lat_proj.shape}")
 
                         # Text encoding & pooled projections
-                        # Ensure token indices are long and on the correct device
-                        input_ids = batch["input_ids"].to(acc.device, dtype=torch.long)
-                        attention_mask = batch["attention_mask"].to(acc.device, dtype=torch.long)
+                        # Ensure token indices are proper dtype and device for embedding
+                        input_ids = batch["input_ids"].long().to(acc.device)
+                        attention_mask = batch["attention_mask"].long().to(acc.device)
                         text_outputs = self.pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
                         txt_embeds = text_outputs[0]
                         # Use embedding inputs directly to avoid embedding layer index errors
