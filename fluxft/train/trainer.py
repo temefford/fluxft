@@ -87,12 +87,6 @@ class LoRATrainer:
             revision=self.cfg.train.revision,
             torch_dtype=self.dtype,
         )
-        # --- PATCH: Force transformer in_channels to 256 so first Linear is rebuilt correctly ---
-        if hasattr(self.pipe, 'transformer'):
-            self.pipe.transformer.in_channels = 256
-            if hasattr(self.pipe.transformer, 'config'):
-                self.pipe.transformer.config.in_channels = 256
-        # -------------------------------------------------------------------------------
         # Replace inference scheduler with a training-friendly DDPMScheduler
         self.noise_scheduler = DDPMScheduler.from_config(
             self.pipe.scheduler.config, prediction_type="epsilon"
@@ -118,10 +112,10 @@ class LoRATrainer:
         self.pipe.text_encoder.requires_grad_(False)
         self.pipe.text_encoder_2.requires_grad_(False)
 
-        # Build projection layer mapping VAE latents -> transformer channel space
+        # Map VAE latents to transformer's expected input channels using config
+        trans_c = self.pipe.transformer.config.in_channels
+        log.info(f"Config transformer input channels = {trans_c}")
         latent_c = self.pipe.vae.config.latent_channels
-        # Set transformer channel count to match transformer's first Linear expected input (256)
-        trans_c = 256
         self.latent_proj = torch.nn.Linear(latent_c, trans_c)
 
         # Initialize CLIP and T5 tokenizers for text conditioning
@@ -242,27 +236,6 @@ class LoRATrainer:
                             log.info(f"lat flattened for Linear: {lat_flat.shape}")
                             lat_flat = self.latent_proj(lat_flat)
                             log.info(f"latent_proj (Linear) output shape: {lat_flat.shape}")
-
-                        # Ensure lat_flat last dim matches transformer's expected input
-                        # Find transformer's first Linear layer and its input dim
-                        first_linear = None
-                        for m in self.transformer.modules():
-                            if isinstance(m, torch.nn.Linear):
-                                first_linear = m
-                                break
-                        if first_linear is not None:
-                            log.info(f"[DEBUG] First transformer Linear: {first_linear}, in_features={first_linear.in_features}, weight shape={first_linear.weight.shape}")
-                            if lat_flat.shape[-1] != first_linear.in_features:
-                                log.warning(f"[FIXUP] Projecting lat_flat from {lat_flat.shape[-1]} to {first_linear.in_features} to match transformer input")
-                                fixup_proj = torch.nn.Linear(lat_flat.shape[-1], first_linear.in_features).to(lat_flat.device, dtype=lat_flat.dtype)
-                                lat_flat = fixup_proj(lat_flat)
-                                log.info(f"lat_flat after robust fixup: {lat_flat.shape}")
-                            # Final assertion to catch any mismatch
-                            assert lat_flat.shape[-1] == first_linear.in_features, (
-                                f"lat_flat shape {lat_flat.shape} does not match transformer's first Linear in_features {first_linear.in_features}"
-                            )
-                        else:
-                            log.warning("No Linear layer found in transformer; cannot verify input shape.")
 
                         # Noise & scheduler
                         noise = torch.randn_like(lat)

@@ -1,0 +1,64 @@
+adapter: lora
+base_model: black-forest-labs/FLUX.1-schnell
+bf16: auto
+dataset_processes: 32
+datasets:
+- message_property_mappings:
+    content: content
+    role: role
+  path: mhenrichsen/alpaca_2k_test
+  trust_remote_code: false
+  type: alpaca
+gradient_accumulation_steps: 1
+gradient_checkpointing: false
+learning_rate: 0.0002
+lisa_layers_attribute: model.layers
+load_best_model_at_end: false
+load_in_4bit: false
+load_in_8bit: true
+lora_alpha: 16
+lora_dropout: 0.05
+lora_r: 8
+lora_target_modules:
+- q_proj
+- v_proj
+- k_proj
+- o_proj
+- gate_proj
+- down_proj
+- up_proj
+loraplus_lr_embedding: 1.0e-06
+lr_scheduler: cosine
+max_prompt_len: 512
+mean_resizing_embeddings: false
+micro_batch_size: 16
+num_epochs: 1.0
+optimizer: adamw_bnb_8bit
+output_dir: ./outputs/mymodel
+pretrain_multipack_attn: true
+pretrain_multipack_buffer_size: 10000
+qlora_sharded_model_loading: false
+ray_num_workers: 1
+resources_per_worker:
+  GPU: 1
+sample_packing_bin_size: 200
+sample_packing_group_size: 100000
+save_only_model: false
+save_safetensors: true
+sequence_len: 4096
+shuffle_merged_datasets: true
+skip_prepare_dataset: false
+strict: false
+train_on_inputs: false
+trl:
+  log_completions: false
+  ref_model_mixup_alpha: 0.9
+  ref_model_sync_steps: 64
+  sync_ref_model: false
+  use_vllm: false
+  vllm_device: auto
+  vllm_dtype: auto
+  vllm_gpu_memory_utilization: 0.9
+use_ray: false
+val_set_size: 0.0
+weight_decay: 0.0
