@@ -113,15 +113,11 @@ class LoRATrainer:
         self.pipe.text_encoder.requires_grad_(False)
         self.pipe.text_encoder_2.requires_grad_(False)
 
-        # Build projection layer mapping VAE latents -> transformer channel space (use 1x1 Conv2d)
+        # Build projection layer mapping VAE latents -> transformer channel space
         latent_c = self.pipe.vae.config.latent_channels
-        trans_c = self.transformer.config.in_channels
-        self.latent_proj = torch.nn.Conv2d(
-            in_channels=latent_c,
-            out_channels=trans_c,
-            kernel_size=1,
-            bias=False
-        ).to(self.accel.device, dtype=self.dtype)
+        # Set transformer channel count to match context_embedder's expected input (4096)
+        trans_c = 4096
+        self.latent_proj = torch.nn.Linear(latent_c, trans_c)
 
         # Initialize CLIP and T5 tokenizers for text conditioning
         self.clip_tokenizer = get_clip_tokenizer()
@@ -155,9 +151,6 @@ class LoRATrainer:
         components = [self.pipe.vae, self.transformer, self.latent_proj, self.opt, self.lr_sched, self.train_dl]
         if self.val_dl is not None:
             components.append(self.val_dl)
-        # Debug: Log components before prepare
-        for idx, comp in enumerate(components):
-            log.warning(f"[PREPARE DEBUG] Pre-prepare Component {idx}: type={type(comp)}, is None={comp is None}, value={comp}")
         prepared = self.accel.prepare(*components)
 
         # Unpack with projection, matching the number of components
@@ -220,13 +213,12 @@ class LoRATrainer:
                         ).long()
                         lat_noisy = self.noise_scheduler.add_noise(latents, noise, ts)
 
-                        # Project latents to transformer channels using 1x1 Conv2d
+                        # Flatten spatial dims and project to transformer channels
                         b, c, h, w = lat_noisy.shape
-                        lat_proj = self.latent_proj(lat_noisy)  # shape: (b, trans_c, h, w)
+                        lat_flat = lat_noisy.permute(0, 2, 3, 1).reshape(b, h * w, c)
+                        shape_debug_logger.warning(f"[SHAPE] lat_flat={lat_flat.shape}")
+                        lat_proj = self.latent_proj(lat_flat)
                         shape_debug_logger.warning(f"[SHAPE] lat_proj={lat_proj.shape}")
-                        # Flatten for transformer input
-                        lat_proj = lat_proj.permute(0, 2, 3, 1).reshape(b, h * w, -1)
-                        shape_debug_logger.warning(f"[SHAPE] lat_proj_flat={lat_proj.shape}")
 
                         # Text encoding for cross-attention (CLIP embeddings)
                         input_ids = batch["input_ids"].long().to(acc.device)
@@ -235,14 +227,16 @@ class LoRATrainer:
                         clip_embeds = text_outputs.last_hidden_state
                         shape_debug_logger.warning(f"[SHAPE] clip_embeds={clip_embeds.shape}")
 
-                        # Use mean pooling as fallback for pooled_projections
+                        # Project pooled_projections to 4096 if needed
+                        pooled_proj = None
                         if hasattr(text_outputs, "pooler_output") and text_outputs.pooler_output is not None:
                             pooled_proj = text_outputs.pooler_output
                         else:
                             pooled_proj = clip_embeds.mean(dim=1, keepdim=True)
+                        if pooled_proj.shape[-1] != 4096:
+                            pooled_proj = torch.nn.Linear(pooled_proj.shape[-1], 4096, device=pooled_proj.device, dtype=pooled_proj.dtype)(pooled_proj)
                         shape_debug_logger.warning(f"[SHAPE] pooled_proj={pooled_proj.shape}")
 
-                        # Forward through Flux’s transformer
                         out = self.transformer(
                             hidden_states=lat_proj,
                             timestep=ts,
