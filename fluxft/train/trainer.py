@@ -182,7 +182,7 @@ class LoRATrainer:
                     lat_noisy = self.noise_scheduler.add_noise(lat, noise, ts)
 
                     # CLIP conditioning
-                    caps = batch["captions"]
+                    caps = batch["input_ids_2"]
                     clip_in = self.clip_tokenizer(
                         caps, padding="longest", return_tensors="pt"
                     ).to(acc.device)
