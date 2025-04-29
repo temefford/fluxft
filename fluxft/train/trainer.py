@@ -82,6 +82,12 @@ class LoRATrainer:
             self.pipe.scheduler.config, prediction_type="epsilon"
         )
 
+        # Move all relevant modules to acc.device
+        self.pipe.text_encoder.to(self.accel.device)
+        self.pipe.text_encoder_2.to(self.accel.device)
+        self.pipe.vae.to(self.accel.device)
+        self.pipe.transformer.to(self.accel.device)
+
         # **IMPORTANT**: FluxPipeline exposes the denoiser as `pipe.transformer`, not `pipe.unet`
         lora_cfg = LoraConfig(
             r=self.cfg.lora.rank,
