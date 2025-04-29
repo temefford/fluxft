@@ -197,45 +197,51 @@ class LoRATrainer:
                                 else:
                                     batch[k] = v.to(acc.device)
 
-                        imgs = batch["pixel_values"]
+                        pix = batch["pixel_values"].to(acc.device, dtype=self.dtype)
+                        log.info(f"pixel_values shape: {pix.shape}")
+                        lat = self.pipe.vae.encode(pix).latent_dist.sample() * scaler
+                        log.info(f"vae latents shape: {lat.shape}")
+                        lat = self.latent_proj(lat)  # [B, C, H, W]
+                        log.info(f"latent_proj output shape: {lat.shape}")
+                        b,c,h,w = lat.shape
+                        lat = lat.permute(0,2,3,1).reshape(b, h*w, c)
+                        log.info(f"lat after flatten shape: {lat.shape}")
 
-                        # Encode → latents
-                        latents = self.pipe.vae.encode(imgs).latent_dist.sample()
-                        latents = latents * scaler
-
-                        # Add noise in latent space (before projection)
-                        noise = torch.randn_like(latents)
-                        ts = torch.randint(
-                            0,
-                            self.noise_scheduler.config.num_train_timesteps,
-                            (latents.shape[0],),
-                            device=latents.device,
+                        # Noise & scheduler
+                        noise = torch.randn_like(lat)
+                        ts    = torch.randint(
+                            0, self.noise_scheduler.config.num_train_timesteps,
+                            (b,), device=lat.device
                         ).long()
-                        lat_noisy = self.noise_scheduler.add_noise(latents, noise, ts)
+                        lat_noisy = self.noise_scheduler.add_noise(lat, noise, ts)
+                        log.info(f"lat_noisy shape: {lat_noisy.shape}")
 
-                        # Flatten spatial dims and project to transformer channels
-                        b, c, h, w = lat_noisy.shape
-                        lat_flat = lat_noisy.permute(0, 2, 3, 1).reshape(b, h * w, c)
-                        shape_debug_logger.warning(f"[SHAPE] lat_flat={lat_flat.shape}")
-                        lat_proj = self.latent_proj(lat_flat)
-                        shape_debug_logger.warning(f"[SHAPE] lat_proj={lat_proj.shape}")
+                        # CLIP conditioning
+                        captions = batch["captions"]
+                        log.info(f"captions: {captions}")
+                        clip_in = self.clip_tokenizer(
+                            captions, padding="longest", return_tensors="pt"
+                        ).to(acc.device)
+                        log.info(f"clip_in.input_ids shape: {clip_in['input_ids'].shape}")
+                        clip_out = self.pipe.text_encoder(**clip_in)
+                        clip_emb = clip_out.pooler_output
+                        log.info(f"clip_emb (pooler_output) shape: {clip_emb.shape}")
+                        clip_emb_proj = clip_emb  # [B, pooled_dim]
+                        log.info(f"clip_emb after clip_proj shape: {clip_emb_proj.shape}")
 
-                        # Text encoding for cross-attention (CLIP embeddings)
-                        input_ids = batch["input_ids"].long().to(acc.device)
-                        attention_mask = batch["attention_mask"].long().to(acc.device)
-                        text_outputs = self.pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
-                        clip_embeds = text_outputs.last_hidden_state
-                        shape_debug_logger.warning(f"[SHAPE] clip_embeds={clip_embeds.shape}")
+                        # T5 conditioning
+                        t5_in = self.t5_tokenizer(
+                            captions, padding="max_length", truncation=True,
+                            max_length=self.t5_tokenizer.model_max_length,
+                            return_tensors="pt"
+                        ).to(acc.device)
+                        log.info(f"t5_in.input_ids shape: {t5_in['input_ids'].shape}")
+                        t5_out = self.pipe.text_encoder_2(**t5_in)
+                        t5_emb = t5_out.last_hidden_state  # [B, seq, cross_dim]
+                        log.info(f"t5_emb after t5_proj shape: {t5_emb.shape}")
 
-                        # Project pooled_projections to 4096 if needed (for transformer only)
-                        pooled_proj = None
-                        if hasattr(text_outputs, "pooler_output") and text_outputs.pooler_output is not None:
-                            pooled_proj = text_outputs.pooler_output
-                        else:
-                            pooled_proj = clip_embeds.mean(dim=1, keepdim=True)
-                        if pooled_proj.shape[-1] != 4096:
-                            pooled_proj = torch.nn.Linear(pooled_proj.shape[-1], 4096, device=pooled_proj.device, dtype=pooled_proj.dtype)(pooled_proj)
-                        shape_debug_logger.warning(f"[SHAPE] pooled_proj={pooled_proj.shape}")
+                        # Forward & loss
+                        log.info(f"Passing to transformer: lat_noisy shape {lat_noisy.shape}, ts shape {ts.shape}, encoder_hidden_states shape {t5_emb.shape}, pooled_projections shape {clip_emb_proj.shape}")
 
                         # Use raw CLIP embeddings as encoder_hidden_states (no projection)
                         enc_proj = clip_embeds
