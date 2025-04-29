@@ -169,9 +169,13 @@ class LoRATrainer:
                         # Move all tensors in batch to acc.device
                         for k, v in batch.items():
                             if isinstance(v, torch.Tensor):
-                                batch[k] = v.to(acc.device)
+                                # Only cast float tensors (images/latents) to self.dtype, keep ids/masks as int
+                                if k == "pixel_values":
+                                    batch[k] = v.to(acc.device, dtype=self.dtype)
+                                else:
+                                    batch[k] = v.to(acc.device)
 
-                        imgs = batch["pixel_values"].to(dtype=self.dtype)
+                        imgs = batch["pixel_values"]
 
                         # Encode → latents
                         latents = self.pipe.vae.encode(imgs).latent_dist.sample()
