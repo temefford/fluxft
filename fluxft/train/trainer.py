@@ -237,19 +237,27 @@ class LoRATrainer:
                             log.info(f"lat flattened for Linear: {lat_flat.shape}")
                             lat_flat = self.latent_proj(lat_flat)
                             log.info(f"latent_proj (Linear) output shape: {lat_flat.shape}")
+
                         # Ensure lat_flat last dim matches transformer's expected input
-                        # Try to get transformer's first Linear layer input dim
-                        next_linear_in = None
+                        # Find transformer's first Linear layer and its input dim
+                        first_linear = None
                         for m in self.transformer.modules():
                             if isinstance(m, torch.nn.Linear):
-                                next_linear_in = m.in_features
+                                first_linear = m
                                 break
-                        log.info(f"[DEBUG] Next transformer Linear expects in_features={next_linear_in}, lat_flat shape={lat_flat.shape}")
-                        if next_linear_in is not None and lat_flat.shape[-1] != next_linear_in:
-                            log.warning(f"[FIXUP] Projecting lat_flat from {lat_flat.shape[-1]} to {next_linear_in}")
-                            proj = torch.nn.Linear(lat_flat.shape[-1], next_linear_in).to(lat_flat.device, dtype=lat_flat.dtype)
-                            lat_flat = proj(lat_flat)
-                            log.info(f"lat_flat after dynamic fixup: {lat_flat.shape}")
+                        if first_linear is not None:
+                            log.info(f"[DEBUG] First transformer Linear: {first_linear}, in_features={first_linear.in_features}, weight shape={first_linear.weight.shape}")
+                            if lat_flat.shape[-1] != first_linear.in_features:
+                                log.warning(f"[FIXUP] Projecting lat_flat from {lat_flat.shape[-1]} to {first_linear.in_features} to match transformer input")
+                                fixup_proj = torch.nn.Linear(lat_flat.shape[-1], first_linear.in_features).to(lat_flat.device, dtype=lat_flat.dtype)
+                                lat_flat = fixup_proj(lat_flat)
+                                log.info(f"lat_flat after robust fixup: {lat_flat.shape}")
+                            # Final assertion to catch any mismatch
+                            assert lat_flat.shape[-1] == first_linear.in_features, (
+                                f"lat_flat shape {lat_flat.shape} does not match transformer's first Linear in_features {first_linear.in_features}"
+                            )
+                        else:
+                            log.warning("No Linear layer found in transformer; cannot verify input shape.")
 
                         # Noise & scheduler
                         noise = torch.randn_like(lat)
@@ -308,17 +316,6 @@ class LoRATrainer:
                                 break
                         if first_linear is not None:
                             log.info(f"[DEBUG] First transformer Linear: {first_linear}, in_features={first_linear.in_features}, weight shape={first_linear.weight.shape}")
-                            if lat_flat.shape[-1] != first_linear.in_features:
-                                log.warning(f"[FIXUP] Projecting lat_flat from {lat_flat.shape[-1]} to {first_linear.in_features} to match transformer input")
-                                fixup_proj = torch.nn.Linear(lat_flat.shape[-1], first_linear.in_features).to(lat_flat.device, dtype=lat_flat.dtype)
-                                lat_flat = fixup_proj(lat_flat)
-                                log.info(f"lat_flat after robust fixup: {lat_flat.shape}")
-                        log.info(f"Passing to transformer: hidden_states shape {lat_flat.shape}, ts shape {ts.shape}, encoder_hidden_states shape {t5_emb_proj.shape}, pooled_projections shape {clip_emb_proj.shape}")
-                        out = self.transformer(
-                            hidden_states=lat_flat,
-                            timestep=ts,
-                            encoder_hidden_states=t5_emb_proj,
-                            pooled_projections=clip_emb_proj,
                             txt_ids=None,
                         )
                         preds = out.sample
