@@ -95,14 +95,19 @@ class LoRATrainer:
         self.pipe.text_encoder.requires_grad_(False)
         self.pipe.text_encoder_2.requires_grad_(False)
 
+        # Build projection layer mapping VAE latents -> transformer channel space
+        latent_c = self.pipe.vae.config.latent_channels
+        trans_c = self.transformer.config.in_channels
+        self.latent_proj = torch.nn.Linear(latent_c, trans_c)
+
     def _prepare_data(self):
         img_size = getattr(self.cfg.data, "img_size", 1200)
         self.train_dl, self.val_dl = build_dataloaders(
             self.cfg.data, self.cfg.train.batch_size, img_size=img_size
         )
 
-        # Optimizer only over LoRA adapter params
-        trainable = [p for p in self.transformer.parameters() if p.requires_grad]
+        # Optimizer only over LoRA adapter params + projection
+        trainable = [p for p in self.transformer.parameters() if p.requires_grad] + list(self.latent_proj.parameters())
         self.opt = torch.optim.AdamW(trainable, lr=self.cfg.train.learning_rate, weight_decay=1e-2)
 
         # LR scheduler
@@ -118,21 +123,24 @@ class LoRATrainer:
             num_training_steps=total_steps,
         )
 
+        # Prepare with accelerate (include projection layer)
+        components = [self.pipe.vae, self.transformer, self.latent_proj, self.opt, self.lr_sched, self.train_dl]
+        if self.val_dl is not None:
+            components.append(self.val_dl)
+        prepared = self.accel.prepare(*components)
+
+        # Unpack with projection
+        self.pipe.vae, self.transformer, self.latent_proj, self.opt, self.lr_sched, self.train_dl, *rest = prepared
+        if self.val_dl is not None:
+            self.val_dl = rest[0]
+        # Ensure projection layer on correct device & dtype
+        self.latent_proj = self.latent_proj.to(self.accel.device, dtype=self.dtype)
+
         # Move VAE and transformer to device and dtype before wrapping
         device = self.accel.device
         self.pipe.vae = self.pipe.vae.to(device, dtype=self.dtype)
         self.transformer = self.transformer.to(device, dtype=self.dtype)
 
-        # Prepare with accelerate
-        components = [self.pipe.vae, self.transformer, self.opt, self.lr_sched, self.train_dl]
-        if self.val_dl is not None:
-            components.append(self.val_dl)
-        prepared = self.accel.prepare(*components)
-
-        # Unpack
-        self.pipe.vae, self.transformer, self.opt, self.lr_sched, self.train_dl, *rest = prepared
-        if self.val_dl is not None:
-            self.val_dl = rest[0]
         # Re-apply device and dtype to ensure modules are on GPU
         device = self.accel.device
         self.pipe.vae = self.pipe.vae.to(device, dtype=self.dtype)
@@ -160,17 +168,27 @@ class LoRATrainer:
                         latents = self.pipe.vae.encode(imgs).latent_dist.sample()
                         latents = latents * scaler
 
-                        shape_debug_logger.warning(f"[SHAPE] latents={latents.shape}")
-
-                        # Add noise
-                        noise = torch.randn_like(latents)
+                        # Flatten spatial dims and project to transformer channels
+                        b, c, h, w = latents.shape
+                        lat_flat = latents.permute(0, 2, 3, 1).reshape(b, h * w, c)
+                        shape_debug_logger.warning(f"[SHAPE] lat_flat={lat_flat.shape}")
+                        # Dynamically adjust projection layer if latent dim mismatch
+                        in_dim = lat_flat.size(-1)
+                        if self.latent_proj.in_features != in_dim:
+                            out_dim = self.latent_proj.out_features
+                            log.warning(f"Reinitializing latent_proj: in_features {self.latent_proj.in_features}->{in_dim}, out_features={out_dim}")
+                            self.latent_proj = torch.nn.Linear(in_dim, out_dim).to(acc.device, dtype=self.dtype)
+                        lat_proj = self.latent_proj(lat_flat)
+                        shape_debug_logger.warning(f"[SHAPE] lat_proj={lat_proj.shape}")
+                        # Add noise in projected space
+                        noise = torch.randn_like(lat_proj)
                         ts = torch.randint(
                             0,
                             self.noise_scheduler.config.num_train_timesteps,
-                            (latents.shape[0],),
-                            device=latents.device,
+                            (b,),
+                            device=lat_proj.device,
                         ).long()
-                        lat_noisy = self.noise_scheduler.add_noise(latents, noise, ts)
+                        lat_noisy = self.noise_scheduler.add_noise(lat_proj, noise, ts)
 
                         # Forward through Flux’s transformer
                         out = self.transformer(
@@ -178,12 +196,10 @@ class LoRATrainer:
                             timestep=ts,
                             encoder_hidden_states=None,
                             pooled_projections=None,
-                            img_ids=torch.arange(latents.shape[2] * latents.shape[3], device=latents.device).repeat(latents.shape[0],1),
+                            img_ids=torch.arange(h*w, device=lat_proj.device).repeat(b, 1),
                             txt_ids=None,
                         )
-                        # The model returns a ModelOutput; the noise prediction is in `.sample`
                         preds = out.sample
-
                         loss = F.mse_loss(preds.float(), noise.float())
                         acc.backward(loss)
                         self.opt.step()
