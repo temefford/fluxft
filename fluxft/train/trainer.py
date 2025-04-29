@@ -152,22 +152,22 @@ class LoRATrainer:
             components.append(self.val_dl)
         prepared = self.accel.prepare(*components)
 
-        # Unpack with projection
-        self.pipe.vae, self.transformer, self.latent_proj, self.opt, self.lr_sched, self.train_dl, *rest = prepared
+        # Unpack with projection, matching the number of components
+        if self.val_dl is not None:
+            (self.pipe.vae, self.transformer, self.latent_proj, self.opt, self.lr_sched, self.train_dl, self.val_dl) = prepared
+        else:
+            (self.pipe.vae, self.transformer, self.latent_proj, self.opt, self.lr_sched, self.train_dl) = prepared
         # Debug logging for prepared components
         debug_components = [self.pipe.vae, self.transformer, self.latent_proj, self.opt, self.lr_sched, self.train_dl]
-        if self.val_dl is not None and rest:
-            self.val_dl = rest[0]
+        if self.val_dl is not None:
             debug_components.append(self.val_dl)
         for idx, comp in enumerate(debug_components):
             log.warning(f"[DEBUG] Component {idx}: type={type(comp)}, is None={comp is None}, value={comp}")
         log.warning(f"[DEBUG] self.dtype: {self.dtype}")
         log.warning(f"[DEBUG] self.accel.device: {self.accel.device}")
         # Ensure projection layer on correct device & dtype
-        if self.latent_proj is not None:
-            self.latent_proj = self.latent_proj.to(self.accel.device, dtype=self.dtype)
-        else:
-            log.error("latent_proj is None before .to() call!")
+        assert self.latent_proj is not None, "latent_proj is None after accelerate.prepare!"
+        self.latent_proj = self.latent_proj.to(self.accel.device, dtype=self.dtype)
         # No need to manually .to() VAE/transformer after accelerator.prepare
 
 
