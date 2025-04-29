@@ -235,12 +235,19 @@ class LoRATrainer:
                         clip_embeds = text_outputs.last_hidden_state
                         shape_debug_logger.warning(f"[SHAPE] clip_embeds={clip_embeds.shape}")
 
-                        # Forward through Flux’s transformer with CLIP cross-attention only
+                        # Use mean pooling as fallback for pooled_projections
+                        if hasattr(text_outputs, "pooler_output") and text_outputs.pooler_output is not None:
+                            pooled_proj = text_outputs.pooler_output
+                        else:
+                            pooled_proj = clip_embeds.mean(dim=1, keepdim=True)
+                        shape_debug_logger.warning(f"[SHAPE] pooled_proj={pooled_proj.shape}")
+
+                        # Forward through Flux’s transformer
                         out = self.transformer(
                             hidden_states=lat_proj,
                             timestep=ts,
                             encoder_hidden_states=clip_embeds,
-                            pooled_projections=None,
+                            pooled_projections=pooled_proj,
                             txt_ids=None,
                         )
                         preds = out.sample
