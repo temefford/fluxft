@@ -14,14 +14,4 @@ def collate_fn(batch):
         "input_ids": torch.stack(input_ids),
         "attention_mask": torch.stack(attention_mask),
     }
-    # Include raw captions for runtime tokenization, always as strings
-    import logging
-    captions = []
-    for b in batch:
-        cap = b.get("caption", "")
-        if cap is None:
-            logging.warning("Found None caption in batch; replacing with empty string.")
-            cap = ""
-        captions.append(str(cap))
-    out["captions"] = captions
     return out
