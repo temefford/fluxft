@@ -237,6 +237,19 @@ class LoRATrainer:
                             log.info(f"lat flattened for Linear: {lat_flat.shape}")
                             lat_flat = self.latent_proj(lat_flat)
                             log.info(f"latent_proj (Linear) output shape: {lat_flat.shape}")
+                        # Ensure lat_flat last dim matches transformer's expected input
+                        # Try to get transformer's first Linear layer input dim
+                        next_linear_in = None
+                        for m in self.transformer.modules():
+                            if isinstance(m, torch.nn.Linear):
+                                next_linear_in = m.in_features
+                                break
+                        log.info(f"[DEBUG] Next transformer Linear expects in_features={next_linear_in}, lat_flat shape={lat_flat.shape}")
+                        if next_linear_in is not None and lat_flat.shape[-1] != next_linear_in:
+                            log.warning(f"[FIXUP] Projecting lat_flat from {lat_flat.shape[-1]} to {next_linear_in}")
+                            proj = torch.nn.Linear(lat_flat.shape[-1], next_linear_in).to(lat_flat.device, dtype=lat_flat.dtype)
+                            lat_flat = proj(lat_flat)
+                            log.info(f"lat_flat after dynamic fixup: {lat_flat.shape}")
 
                         # Noise & scheduler
                         noise = torch.randn_like(lat)
