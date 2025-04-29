@@ -226,8 +226,15 @@ class LoRATrainer:
                         clip_out = self.pipe.text_encoder(**clip_in)
                         clip_emb = clip_out.pooler_output
                         log.info(f"clip_emb (pooler_output) shape: {clip_emb.shape}")
-                        clip_emb_proj = clip_emb  # [B, pooled_dim]
-                        log.info(f"clip_emb after clip_proj shape: {clip_emb_proj.shape}")
+                        pooled_dim = getattr(self.transformer, 'pooled_projection_dim', None)
+                        if pooled_dim is None and hasattr(self.transformer, 'config'):
+                            pooled_dim = getattr(self.transformer.config, 'pooled_projection_dim', None)
+                        if pooled_dim is not None and clip_emb.shape[-1] != pooled_dim:
+                            clip_emb_proj = torch.nn.Linear(clip_emb.shape[-1], pooled_dim, device=clip_emb.device, dtype=clip_emb.dtype)(clip_emb)
+                            log.info(f"clip_emb projected to pooled_dim {pooled_dim}: {clip_emb_proj.shape}")
+                        else:
+                            clip_emb_proj = clip_emb
+                            log.info(f"clip_emb used as-is: {clip_emb_proj.shape}")
 
                         # T5 conditioning
                         t5_in = self.t5_tokenizer(
@@ -237,22 +244,24 @@ class LoRATrainer:
                         ).to(acc.device)
                         log.info(f"t5_in.input_ids shape: {t5_in['input_ids'].shape}")
                         t5_out = self.pipe.text_encoder_2(**t5_in)
-                        t5_emb = t5_out.last_hidden_state  # [B, seq, cross_dim]
-                        log.info(f"t5_emb after t5_proj shape: {t5_emb.shape}")
+                        t5_emb = t5_out.last_hidden_state
+                        joint_dim = getattr(self.transformer, 'joint_attention_dim', None)
+                        if joint_dim is None and hasattr(self.transformer, 'config'):
+                            joint_dim = getattr(self.transformer.config, 'joint_attention_dim', None)
+                        if joint_dim is not None and t5_emb.shape[-1] != joint_dim:
+                            t5_emb_proj = torch.nn.Linear(t5_emb.shape[-1], joint_dim, device=t5_emb.device, dtype=t5_emb.dtype)(t5_emb)
+                            log.info(f"t5_emb projected to joint_dim {joint_dim}: {t5_emb_proj.shape}")
+                        else:
+                            t5_emb_proj = t5_emb
+                            log.info(f"t5_emb used as-is: {t5_emb_proj.shape}")
 
                         # Forward & loss
-                        log.info(f"Passing to transformer: lat_noisy shape {lat_noisy.shape}, ts shape {ts.shape}, encoder_hidden_states shape {t5_emb.shape}, pooled_projections shape {clip_emb_proj.shape}")
-
-                        # Use raw CLIP embeddings as encoder_hidden_states (no projection)
-                        enc_proj = clip_embeds
-                        shape_debug_logger.warning(f"[SHAPE] encoder_hidden_states={enc_proj.shape}")
-
-                        # Pass raw clip_embeds (no projection) to any text projection block, only project for transformer context
+                        log.info(f"Passing to transformer: lat_noisy shape {lat_noisy.shape}, ts shape {ts.shape}, encoder_hidden_states shape {t5_emb_proj.shape}, pooled_projections shape {clip_emb_proj.shape}")
                         out = self.transformer(
-                            hidden_states=lat_proj,
+                            hidden_states=lat_noisy,
                             timestep=ts,
-                            encoder_hidden_states=enc_proj,
-                            pooled_projections=pooled_proj,
+                            encoder_hidden_states=t5_emb_proj,
+                            pooled_projections=clip_emb_proj,
                             txt_ids=None,
                         )
                         preds = out.sample
