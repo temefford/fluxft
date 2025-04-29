@@ -160,9 +160,14 @@ class LoRATrainer:
             self.val_dl = rest[0]
             debug_components.append(self.val_dl)
         for idx, comp in enumerate(debug_components):
-            log.warning(f"[DEBUG] Component {idx}: type={type(comp)}, is None={comp is None}")
+            log.warning(f"[DEBUG] Component {idx}: type={type(comp)}, is None={comp is None}, value={comp}")
+        log.warning(f"[DEBUG] self.dtype: {self.dtype}")
+        log.warning(f"[DEBUG] self.accel.device: {self.accel.device}")
         # Ensure projection layer on correct device & dtype
-        self.latent_proj = self.latent_proj.to(self.accel.device, dtype=self.dtype)
+        if self.latent_proj is not None:
+            self.latent_proj = self.latent_proj.to(self.accel.device, dtype=self.dtype)
+        else:
+            log.error("latent_proj is None before .to() call!")
         # No need to manually .to() VAE/transformer after accelerator.prepare
 
 
