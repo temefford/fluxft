@@ -209,7 +209,8 @@ class LoRATrainer:
                         attention_mask = batch["attention_mask"].to(acc.device, dtype=torch.long)
                         text_outputs = self.pipe.text_encoder(input_ids=input_ids, attention_mask=attention_mask)
                         txt_embeds = text_outputs[0]
-                        pooled_proj = self.pipe.text_encoder_2(txt_embeds).last_hidden_state
+                        # Use embedding inputs directly to avoid embedding layer index errors
+                        pooled_proj = self.pipe.text_encoder_2(inputs_embeds=txt_embeds).last_hidden_state
                         shape_debug_logger.warning(f"[SHAPE] pooled_proj={pooled_proj.shape}")
 
                         # Forward through Flux’s transformer
