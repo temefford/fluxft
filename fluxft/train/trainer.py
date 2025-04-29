@@ -237,11 +237,9 @@ class LoRATrainer:
                             pooled_proj = torch.nn.Linear(pooled_proj.shape[-1], 4096, device=pooled_proj.device, dtype=pooled_proj.dtype)(pooled_proj)
                         shape_debug_logger.warning(f"[SHAPE] pooled_proj={pooled_proj.shape}")
 
-                        # Project encoder_hidden_states to 4096 if needed (for transformer only)
+                        # Use raw CLIP embeddings as encoder_hidden_states (no projection)
                         enc_proj = clip_embeds
-                        if clip_embeds.shape[-1] != 4096:
-                            enc_proj = torch.nn.Linear(clip_embeds.shape[-1], 4096, device=clip_embeds.device, dtype=clip_embeds.dtype)(clip_embeds)
-                        shape_debug_logger.warning(f"[SHAPE] encoder_hidden_states (projected) = {enc_proj.shape}")
+                        shape_debug_logger.warning(f"[SHAPE] encoder_hidden_states={enc_proj.shape}")
 
                         # Pass raw clip_embeds (no projection) to any text projection block, only project for transformer context
                         out = self.transformer(
