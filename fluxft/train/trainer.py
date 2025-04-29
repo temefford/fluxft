@@ -206,14 +206,37 @@ class LoRATrainer:
                         trans_c = getattr(self.transformer, 'in_channels', None)
                         if trans_c is None and hasattr(self.transformer, 'config'):
                             trans_c = getattr(self.transformer.config, 'in_channels', None)
-                        if not hasattr(self, 'latent_proj') or self.latent_proj.in_channels != c or self.latent_proj.out_channels != trans_c:
-                            log.warning(f"Recreating latent_proj: in_channels={c}, out_channels={trans_c}")
-                            self.latent_proj = torch.nn.Conv2d(c, trans_c, 1).to(acc.device, dtype=self.dtype)
-                        lat_proj = self.latent_proj(lat)  # [B, trans_c, H, W]
-                        log.info(f"latent_proj output shape: {lat_proj.shape}")
-                        b, c2, h, w = lat_proj.shape
-                        lat_flat = lat_proj.permute(0,2,3,1).reshape(b, h*w, c2)
-                        log.info(f"lat after flatten shape: {lat_flat.shape}")
+                        # Detect projection type and check shape
+                        proj_is_linear = isinstance(self.latent_proj, torch.nn.Linear) if hasattr(self, 'latent_proj') else False
+                        proj_is_conv = isinstance(self.latent_proj, torch.nn.Conv2d) if hasattr(self, 'latent_proj') else False
+                        need_recreate = False
+                        if not hasattr(self, 'latent_proj'):
+                            need_recreate = True
+                        elif proj_is_linear and (self.latent_proj.in_features != c or self.latent_proj.out_features != trans_c):
+                            need_recreate = True
+                        elif proj_is_conv and (self.latent_proj.in_channels != c or self.latent_proj.out_channels != trans_c):
+                            need_recreate = True
+                        # Default to Conv2d if 4D input, Linear if 3D after flatten
+                        if need_recreate:
+                            if len(lat.shape) == 4:
+                                log.warning(f"Recreating latent_proj as Conv2d: in_channels={c}, out_channels={trans_c}")
+                                self.latent_proj = torch.nn.Conv2d(c, trans_c, 1).to(acc.device, dtype=self.dtype)
+                            else:
+                                log.warning(f"Recreating latent_proj as Linear: in_features={c}, out_features={trans_c}")
+                                self.latent_proj = torch.nn.Linear(c, trans_c).to(acc.device, dtype=self.dtype)
+                        # Use the correct projection
+                        if isinstance(self.latent_proj, torch.nn.Conv2d):
+                            lat_proj = self.latent_proj(lat)  # [B, trans_c, H, W]
+                            log.info(f"latent_proj output shape: {lat_proj.shape}")
+                            b, c2, h, w = lat_proj.shape
+                            lat_flat = lat_proj.permute(0,2,3,1).reshape(b, h*w, c2)
+                            log.info(f"lat after flatten shape: {lat_flat.shape}")
+                        else:
+                            # Flatten first if using Linear
+                            lat_flat = lat.permute(0,2,3,1).reshape(b, h*w, c)
+                            log.info(f"lat flattened for Linear: {lat_flat.shape}")
+                            lat_flat = self.latent_proj(lat_flat)
+                            log.info(f"latent_proj (Linear) output shape: {lat_flat.shape}")
 
                         # Noise & scheduler
                         noise = torch.randn_like(lat)
